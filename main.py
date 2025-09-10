@@ -200,3 +200,17 @@ async def root():
 async def manual_scan():
     await scan_once()
     return {"ok": True, "manual": True}
+@app.get("/test")
+async def test():
+    text = (
+        "⚡ *Test-Signal BTCUSDT (5m)*\n"
+        "➡️ *LONG*\n"
+        "🎯 Entry: 25000\n"
+        "🛡 SL: 24800\n"
+        "🏁 TP1: 25200\n"
+        "🏁 TP2: 25400\n"
+        "📊 Prob.: 85%\n"
+        "✅ EMA + RSI + Volumen bestätigt"
+    )
+    await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
+    return {"ok": True, "test": True}
