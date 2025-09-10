@@ -1,7 +1,7 @@
-# Autonomous MEXC Scanner → Telegram (FastAPI + APScheduler + CCXT)
-import os, asyncio, time, math
+# MEXC Auto-Scanner → Telegram (FastAPI + APScheduler + CCXT)
+import os, asyncio, time, math, traceback
 from datetime import datetime, timezone
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 
 import pandas as pd
 import pandas_ta as ta
@@ -14,40 +14,35 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 TG_TOKEN   = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
-# 10 MEXC-Spot-Paare
 SYMBOLS = [
     "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
     "TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT"
 ]
 
-TF_TRIGGER = "5m"                 # Signale auf 5m
-TF_FILTERS = ["15m","1h","4h"]    # HTF-Trendfilter
-LOOKBACK = 300                    # Kerzen je TF
-SCAN_INTERVAL_S = 60              # Scan-Frequenz (Sekunden)
+TF_TRIGGER = "5m"
+TF_FILTERS = ["15m","1h","4h"]
+LOOKBACK = 300
+SCAN_INTERVAL_S = 60
 
-# Levels (ATR-Multiplikatoren) – kannst du hier anpassen
 ATR_SL  = 1.5
 TP1_ATR = 1.0
 TP2_ATR = 1.8
 TP3_ATR = 2.6
 
-# Mindest-Qualität für Signale
-MIN_PROB = 75  # % -> nur senden, wenn prob >= MIN_PROB
+MIN_PROB = 75  # nur senden wenn >= 75 %
 
-# ========= Init =========
+# ========= Prüfungen =========
 if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
+# ========= Globale Objekte =========
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram")
-
-# CCXT Exchange
-ex = ccxt.mexc({"enableRateLimit": True})
-
-# Anti-Spam: merke letztes Signal je (symbol+dir)
+ex: ccxt.mexc = ccxt.mexc({"enableRateLimit": True})
 last_signal_ts: Dict[str, float] = {}
+stats = {"last_scan_at": None, "signals_sent": 0, "last_error": None}
 
-# ========= Indikator-Helfer =========
+# ========= Helper =========
 def ema(s: pd.Series, length: int): return ta.ema(s, length)
 def rsi(s: pd.Series, length: int = 14): return ta.rsi(s, length)
 def atr(h, l, c, length: int = 14): return ta.atr(h, l, c, length)
@@ -103,15 +98,20 @@ async def send_signal(symbol: str, tf: str, direction: str, entry: float, sl: fl
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
 def fetch_df(symbol: str, timeframe: str) -> pd.DataFrame:
-    ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=LOOKBACK)
-    return pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+    """Hole OHLCV & baue DataFrame. Fängt Exchange-Fehler sauber ab."""
+    try:
+        ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=LOOKBACK)
+        df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+        return df
+    except Exception as e:
+        raise RuntimeError(f"fetch_ohlcv failed for {symbol} {timeframe}: {e}")
 
 def compute_trend_ok(df: pd.DataFrame) -> Tuple[bool,bool]:
     ema200 = ema(df["close"], 200).iloc[-1]
     c = df["close"].iloc[-1]
     return c > ema200, c < ema200
 
-def analyze_trigger(df: pd.DataFrame) -> Dict[str, any]:
+def analyze_trigger(df: pd.DataFrame) -> Dict[str, Any]:
     df["ema50"]  = ema(df.close, 50)
     df["ema100"] = ema(df.close, 100)
     df["ema200"] = ema(df.close, 200)
@@ -137,13 +137,14 @@ def analyze_trigger(df: pd.DataFrame) -> Dict[str, any]:
 
 async def scan_once():
     now = time.time()
+    stats["last_scan_at"] = datetime.now(timezone.utc).isoformat()
     for sym in SYMBOLS:
         try:
-            # Trigger-TF (5m)
+            # Trigger TF
             df5 = fetch_df(sym, TF_TRIGGER)
             t = analyze_trigger(df5)
 
-            # Trendfilter (15m / 1h / 4h): alle müssen alignen
+            # Trendfilter
             up_all, dn_all = True, True
             for tf in TF_FILTERS:
                 df_tf = fetch_df(sym, tf)
@@ -154,63 +155,100 @@ async def scan_once():
 
             long_ok  = up_all and (t["bull"] or t["long_fast"])  and t["vol_ok"]
             short_ok = dn_all and (t["bear"] or t["short_fast"]) and t["vol_ok"]
+            if not (long_ok or short_ok):
+                continue
 
-            if long_ok or short_ok:
-                direction = "LONG" if long_ok else "SHORT"
-                prob = prob_score(long_ok, short_ok, t["vol_ok"], up_all or dn_all,
-                                  t["ema200_up"] if long_ok else t["ema200_dn"])
+            direction = "LONG" if long_ok else "SHORT"
+            prob = prob_score(long_ok, short_ok, t["vol_ok"], up_all or dn_all,
+                              t["ema200_up"] if long_ok else t["ema200_dn"])
 
-                # 🔒 Mindestwahrscheinlichkeit
-                if prob < MIN_PROB:
-                    continue
+            if prob < MIN_PROB:
+                continue
 
-                entry, sl, tp1, tp2, tp3 = make_levels(direction, t["price"], t["atr"])
-                key = f"{sym}:{direction}"
-                if throttle(key, now):  # Anti-Spam 5 min
-                    continue
-                checklist = [
-                    "HTF align (15m/1h/4h)",
-                    "Engulf/EMA-Stack",
-                    "Vol>MA",
-                    "EMA200 ok"
-                ]
-                await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, tp3, prob, checklist)
+            entry, sl, tp1, tp2, tp3 = make_levels(direction, t["price"], t["atr"])
+            key = f"{sym}:{direction}"
+            if throttle(key, now):
+                continue
+
+            checklist = [
+                "HTF align (15m/1h/4h)",
+                "Engulf/EMA-Stack",
+                "Vol>MA",
+                "EMA200 ok"
+            ]
+            await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, tp3, prob, checklist)
+            stats["signals_sent"] += 1
 
         except Exception as e:
-            print(f"[scan] {sym} error: {e}")
+            # Fehler nicht als 500 werfen, sondern merken & weiterscannen
+            err = f"{sym} scan error: {e}"
+            print(err)
+            stats["last_error"] = err
         finally:
             time.sleep(ex.rateLimit/1000)
 
 async def runner():
     sched = AsyncIOScheduler()
+    # sofort + alle 60s
     sched.add_job(scan_once, "interval", seconds=SCAN_INTERVAL_S, next_run_time=datetime.now(timezone.utc))
     sched.start()
     while True:
         await asyncio.sleep(3600)
 
+# ========= FastAPI Hooks & Endpoints =========
 @app.on_event("startup")
 async def _startup():
-    asyncio.create_task(runner())
+    try:
+        ex.load_markets()  # wichtig für MEXC, sonst fetch_ohlcv kann scheitern
+        asyncio.create_task(runner())
+    except Exception as e:
+        stats["last_error"] = f"startup error: {e}"
+        print("Startup error:", e)
 
 @app.get("/")
 async def root():
-    return {"ok": True, "mode": "scanner", "tf": TF_TRIGGER, "filters": TF_FILTERS, "min_prob": MIN_PROB}
+    return {
+        "ok": True,
+        "mode": "scanner",
+        "tf": TF_TRIGGER,
+        "filters": TF_FILTERS,
+        "min_prob": MIN_PROB,
+        "last_scan_at": stats["last_scan_at"],
+        "signals_sent": stats["signals_sent"],
+        "last_error": stats["last_error"],
+    }
+
+@app.get("/status")
+async def status():
+    return {
+        "ok": True,
+        "last_scan_at": stats["last_scan_at"],
+        "signals_sent": stats["signals_sent"],
+        "last_error": stats["last_error"],
+    }
 
 @app.get("/scan")
 async def manual_scan():
-    await scan_once()
-    return {"ok": True, "manual": True}
+    try:
+        await scan_once()
+        return {"ok": True, "manual": True, "last_error": stats["last_error"]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/test")
 async def test():
-    text = (
-        "⚡ *Test-Signal BTCUSDT (5m)*\n"
-        "➡️ *LONG*\n"
-        "🎯 Entry: 25000\n"
-        "🛡 SL: 24800\n"
-        "🏁 TP1: 25200\n"
-        "🏁 TP2: 25400\n"
-        "📊 Prob.: 85%\n"
-        "✅ EMA + RSI + Volumen bestätigt"
-    )
-    await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
-    return {"ok": True, "test": True}
+    try:
+        text = (
+            "⚡ *Test-Signal BTCUSDT (5m)*\n"
+            "➡️ *LONG*\n"
+            "🎯 Entry: 25000\n"
+            "🛡 SL: 24800\n"
+            "🏁 TP1: 25200\n"
+            "🏁 TP2: 25400\n"
+            "📊 Prob.: 85%\n"
+            "✅ EMA + RSI + Volumen bestätigt"
+        )
+        await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
+        return {"ok": True, "test": True}
+    except Exception as e:
+        return {"ok": False, "error": f"telegram send failed: {e}"}
