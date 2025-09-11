@@ -1,417 +1,210 @@
-# main.py — Auto-Scanner mit SAFE-ENTRY, Fib-Retest, Danger-Zone, Min-ATR und TP1→SL=BE-Followup
-import os, asyncio
-from datetime import datetime, timezone, timedelta
-from typing import List, Tuple, Dict, Any
+# Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
+import os, asyncio, time, math
+from datetime import datetime, timezone
+from typing import List, Dict, Tuple
+
+import pandas as pd
+import pandas_ta as ta
+import ccxt
 from fastapi import FastAPI
 from telegram import Bot
-import aiohttp
-import math
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ========= ENV =========
-TG_TOKEN = os.getenv("TG_TOKEN")
+# ====== Config ======
+TG_TOKEN   = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
+
+# 10 Coins (Spot). Für Perps: z.B. "BTC/USDT:USDT" bei manchen Börsen; MEXC ccxt-Spot bleibt "BTC/USDT".
+SYMBOLS = ["BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
+           "TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT"]
+
+# Timeframes
+TF_TRIGGER = "5m"       # Signal-TF
+TF_FILTERS = ["15m","1h","4h"]  # Trendfilter TFs
+
+LOOKBACK = 300          # Candles zum Rechnen
+SCAN_INTERVAL_S = 60    # wie oft scannen (Sekunden)
+
+ATR_SL = 1.5
+TP1_ATR = 1.0
+TP2_ATR = 1.8
+TP3_ATR = 2.6
+
+# ====== Init ======
 if not TG_TOKEN or not TG_CHAT_ID:
-    raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID")
+    raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
 bot = Bot(token=TG_TOKEN)
-app = FastAPI(title="Auto Scanner → Telegram (Final3 Safe Entry)")
+app = FastAPI(title="MEXC Auto Scanner → Telegram")
 
-# ========= SETTINGS =========
-# 19 liquide USDT-Paare
-SYMBOLS = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
-    "ADAUSDT","DOGEUSDT","MATICUSDT","LTCUSDT","SHIBUSDT",
-    "AVAXUSDT","LINKUSDT","DOTUSDT","TRXUSDT","TONUSDT",
-    "NEARUSDT","ATOMUSDT","APTUSDT","OPUSDT",
-]
+# CCXT Exchange
+ex = ccxt.mexc({"enableRateLimit": True})
 
-TF              = "5m"
-FILTER_TFS      = ["15m", "1h", "4h"]
-SCAN_INTERVAL_S = 300   # alle 5 Minuten scannen
+# Merker gegen Spam (symbol+tf → letzte Signal-Zeit)
+last_signal: Dict[str, float] = {}
 
-# Leverage & Zielgrößen (auf Margin)
-LEVERAGE         = 20
-TP_MARGIN_PCTS   = [15.0, 20.0, 30.0]       # ≈ Preis +0.75% / +1.00% / +1.50% @20x
-SL_MARGIN_PCT    = 10.0                     # ≈ Preis -0.50% @20x
-TP_PCTS          = [p / LEVERAGE for p in TP_MARGIN_PCTS]   # in Preis-%
-SL_PCT           = SL_MARGIN_PCT / LEVERAGE                 # in Preis-%
+def ema(series: pd.Series, length: int):
+    return ta.ema(series, length)
 
-# SAFE ENTRY Pullback (vom aktuellen Preis)
-SAFE_ENTRY_PCT   = 0.25    # 0.25% ≈ +5% auf Margin @20x
+def rsi(series: pd.Series, length: int = 14):
+    return ta.rsi(series, length)
 
-# Qualitätsfilter
-MIN_PROB         = 60      # 60–69 WEAK, 70–74 MEDIUM, >=75 STRONG
-MIN_ATR_PCT      = 0.20    # min. ATR % (5m)
-DANGER_ZONE_PCT  = 0.20    # Abstand zu HTF Extremes
+def atr(h, l, c, length: int = 14):
+    return ta.atr(h, l, c, length)
 
-# Pending/Anti-Spam
-PENDING_TTL_MIN  = 180
-COOLDOWN_MIN     = 5
+def vol_sma(v, length: int = 20):
+    return ta.sma(v, length)
 
-# ========= STATE =========
-_last_scan_at: datetime | None = None
-_signals_sent: int = 0
-_last_error: str | None = None
+def bullish_engulf(o, h, l, c) -> bool:
+    # bull candle, und umschließt den vorherigen Körper
+    return (c.iloc[-1] > o.iloc[-1]) and (o.iloc[-1] <= l.iloc[-2]) and (c.iloc[-1] >= h.iloc[-2])
 
-_pending: Dict[str, Dict[str, Any]] = {}       # key="SYMBOL:LONG|SHORT" -> setup + ts
-_last_sent_at: Dict[str, datetime] = {}         # cooldown tracker
-_active: Dict[str, Dict[str, Any]] = {}         # follow-ups (TP1 -> SL=BE)
+def bearish_engulf(o, h, l, c) -> bool:
+    return (c.iloc[-1] < o.iloc[-1]) and (o.iloc[-1] >= h.iloc[-2]) and (c.iloc[-1] <= l.iloc[-2])
 
-# ========= UTILS =========
-def ema(values: List[float], period: int) -> List[float]:
-    k = 2 / (period + 1)
-    out, prev = [], None
-    for v in values:
-        prev = v if prev is None else v * k + prev * (1 - k)
-        out.append(prev)
-    return out
+def prob_score(long_ok: bool, short_ok: bool, vol_ok: bool, trend_ok: bool, ema200_align: bool) -> int:
+    base = 70 if (long_ok or short_ok) else 0
+    if base == 0: return 0
+    base += 5 if vol_ok else 0
+    base += 5 if trend_ok else 0
+    base += 5 if ema200_align else 0
+    return min(base, 90)
 
-def rsi(values: List[float], period: int = 14) -> List[float]:
-    gains, losses, rsis = [], [], [50.0]
-    for i in range(1, len(values)):
-        chg = values[i] - values[i-1]
-        gains.append(max(chg, 0.0))
-        losses.append(max(-chg, 0.0))
-        if i < period:
-            rsis.append(50.0)
-        else:
-            ag = sum(gains[-period:]) / period
-            al = sum(losses[-period:]) / period
-            rs = 999999 if al == 0 else ag / al
-            rsis.append(100 - (100 / (1 + rs)))
-    return rsis
-
-def atr_pct(o: List[float], h: List[float], l: List[float], c: List[float], period: int = 14) -> float:
-    trs = []
-    for i in range(1, len(c)):
-        tr = max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1]))
-        trs.append(tr)
-    if len(trs) < period:
-        return 0.0
-    atr = sum(trs[-period:]) / period
-    price = c[-1]
-    return (atr / price) * 100.0 if price > 0 else 0.0
-
-def rr(entry: float, tp: float, sl: float, is_long: bool) -> float:
-    if is_long: reward, risk = tp - entry, entry - sl
-    else:       reward, risk = entry - tp, sl - entry
-    return round(reward / risk, 2) if risk > 0 else 0.0
-
-def fmt(n: float) -> str:
-    if n >= 100: return f"{n:,.2f}"
-    if n >= 1:   return f"{n:,.4f}"
-    return f"{n:.8f}"
-
-def make_safe_entry(entry: float, is_long: bool) -> float:
-    p = SAFE_ENTRY_PCT / 100.0
-    return entry * (1 - p) if is_long else entry * (1 + p)
-
-def touched_safe(safe: float, last_low: float, last_high: float, is_long: bool) -> bool:
-    return (last_low <= safe) if is_long else (last_high >= safe)
-
-def calc_targets_percent(entry: float, is_long: bool) -> Tuple[float,float,float,float]:
-    tp_steps = [p/100.0 for p in TP_PCTS]
-    sl_step  = SL_PCT / 100.0
-    if is_long:
-        tp1 = entry * (1 + tp_steps[0]); tp2 = entry * (1 + tp_steps[1]); tp3 = entry * (1 + tp_steps[2])
-        sl  = entry * (1 - sl_step)
+def make_levels(direction: str, price: float, atrv: float) -> Tuple[float,float,float,float,float]:
+    entry = float(price)
+    if direction == "LONG":
+        sl = round(entry - ATR_SL * atrv, 6)
+        tp1 = round(entry + TP1_ATR * atrv, 6)
+        tp2 = round(entry + TP2_ATR * atrv, 6)
+        tp3 = round(entry + TP3_ATR * atrv, 6)
     else:
-        tp1 = entry * (1 - tp_steps[0]); tp2 = entry * (1 - tp_steps[1]); tp3 = entry * (1 - tp_steps[2])
-        sl  = entry * (1 + sl_step)
-    return tp1, tp2, tp3, sl
+        sl = round(entry + ATR_SL * atrv, 6)
+        tp1 = round(entry - TP1_ATR * atrv, 6)
+        tp2 = round(entry - TP2_ATR * atrv, 6)
+        tp3 = round(entry - TP3_ATR * atrv, 6)
+    return entry, sl, tp1, tp2, tp3
 
-# ========= SWING & FIB =========
-def swing_high_low(series: List[float], lookback: int = 50) -> Tuple[float, float]:
-    look = series[-lookback:] if len(series) >= lookback else series[:]
-    return max(look), min(look)
+def need_throttle(key: str, now: float, cool_s: int = 300) -> bool:
+    # unterdrückt gleiche Signale 5min lang
+    t = last_signal.get(key, 0.0)
+    if now - t < cool_s:
+        return True
+    last_signal[key] = now
+    return False
 
-def fib_zone_ok(entry_safe: float, swing_low: float, swing_high: float, is_long: bool) -> bool:
-    if swing_high <= 0 or swing_low <= 0 or swing_high == swing_low:
-        return False
-    if is_long:
-        diff = swing_high - swing_low
-        f50  = swing_low + 0.5   * diff
-        f618 = swing_low + 0.618 * diff
-        lo, hi = (min(f50, f618), max(f50, f618))
-        return lo <= entry_safe <= hi
-    else:
-        diff = swing_high - swing_low
-        f50  = swing_high - 0.5   * diff
-        f618 = swing_high - 0.618 * diff
-        lo, hi = (min(f50, f618), max(f50, f618))
-        return lo <= entry_safe <= hi
-
-def too_close_to_htf_extremes(price: float, htf_high: float, htf_low: float) -> bool:
-    if htf_high <= 0 or htf_low <= 0:
-        return False
-    up_dist = abs(htf_high - price) / price * 100.0
-    dn_dist = abs(price - htf_low)  / price * 100.0
-    return (up_dist < DANGER_ZONE_PCT) or (dn_dist < DANGER_ZONE_PCT)
-
-# ========= DATA (MEXC v3 Klines) =========
-MEXC_BASE = "https://api.mexc.com"
-
-async def fetch_klines(session: aiohttp.ClientSession, symbol: str, interval: str, limit: int = 300):
-    """
-    MEXC v3 ist binance-kompatibel:
-    GET /api/v3/klines?symbol=BTCUSDT&interval=5m&limit=300
-    Rückgabe: [ [openTime, open, high, low, close, volume, ...], ... ] (ASC)
-    """
-    url = f"{MEXC_BASE}/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    async with session.get(url, timeout=20) as r:
-        r.raise_for_status()
-        raw = await r.json()
-        opens  = [float(x[1]) for x in raw]
-        highs  = [float(x[2]) for x in raw]
-        lows   = [float(x[3]) for x in raw]
-        closes = [float(x[4]) for x in raw]
-        vols   = [float(x[5]) for x in raw]
-        return opens, highs, lows, closes, vols
-
-async def indicators(session, symbol: str, interval: str):
-    o, h, l, c, v = await fetch_klines(session, symbol, interval)
-    if len(c) < 50:
-        return None
-    ema_fast = ema(c, 9)[-1]
-    ema_slow = ema(c, 21)[-1]
-    r = rsi(c, 14)[-1]
-    v_avg = sum(v[-20:]) / 20
-    v_spike = v[-1] > 1.3 * v_avg
-    atrp = atr_pct(o, h, l, c, 14)
-    return {
-        "o": o, "h": h, "l": l, "c": c, "v": v,
-        "close": c[-1],
-        "ema_fast": ema_fast,
-        "ema_slow": ema_slow,
-        "rsi": r,
-        "vol_spike": v_spike,
-        "atr_pct": atrp
-    }
-
-def probability(main: dict, filters: List[dict], is_long: bool) -> int:
-    ema_ok = (main["ema_fast"] > main["ema_slow"]) if is_long else (main["ema_fast"] < main["ema_slow"])
-    rsi_ok = (main["rsi"] >= 50) if is_long else (main["rsi"] <= 50)
-    htf_ok = all((f["ema_fast"] > f["ema_slow"]) if is_long else (f["ema_fast"] < f["ema_slow"]) for f in filters)
-    vol_ok = main["vol_spike"]
-    score = 0
-    score += 25 if ema_ok else 0
-    score += 25 if rsi_ok else 0
-    score += 25 if htf_ok else 0
-    score += 10 if vol_ok else 0
-    return min(100, score)
-
-def classify_prob(prob: int) -> Tuple[str, str]:
-    if prob >= 75: return "STRONG", "✅ STRONG"
-    if prob >= 70: return "MEDIUM", "⚠️ MEDIUM"
-    return "WEAK", "⚠️ WEAK"
-
-# ========= CORE ANALYSE =========
-async def analyze_symbol(session, symbol: str):
-    main = await indicators(session, symbol, TF)
-    if not main:
-        return None
-    if main["atr_pct"] < MIN_ATR_PCT:
-        return None
-
-    # HTF Filter (15m/1h/4h)
-    filt = []
-    for tf in FILTER_TFS:
-        x = await indicators(session, symbol, tf)
-        if not x: return None
-        filt.append(x)
-
-    # Richtung
-    is_long  = (main["ema_fast"] > main["ema_slow"]) and (main["rsi"] >= 48)
-    is_short = (main["ema_fast"] < main["ema_slow"]) and (main["rsi"] <= 52)
-    if not (is_long or is_short):
-        return None
-
-    # Danger-Zone Nähe zu HTF Extremes
-    htf1h = filt[1] if len(filt) >= 2 else filt[-1]
-    htf_high, htf_low = max(htf1h["h"][-120:]), min(htf1h["l"][-120:])
-    if too_close_to_htf_extremes(main["close"], htf_high, htf_low):
-        return None
-
-    # Probability & Tier
-    prob = probability(main, filt, is_long)
-    if prob < MIN_PROB:
-        return None
-    tier, tag = classify_prob(prob)
-
-    # SAFE-Entry
-    entry_now = main["close"]
-    safe      = make_safe_entry(entry_now, is_long)
-
-    # Fib-Retest Pflicht (5m Swing)
-    sw_high, sw_low = swing_high_low(main["c"], lookback=50)
-    if not fib_zone_ok(safe, sw_low, sw_high, is_long):
-        return None
-
-    # Targets/SL
-    tp1, tp2, tp3, sl = calc_targets_percent(entry_now, is_long)
-    rr1 = rr(safe, tp1, sl, is_long)
-    rr2 = rr(safe, tp2, sl, is_long)
-    rr3 = rr(safe, tp3, sl, is_long)
-
-    return {
-        "symbol": symbol, "display": symbol.replace("USDT","/USDT"),
-        "direction": "LONG" if is_long else "SHORT",
-        "is_long": is_long,
-        "entry_now": entry_now, "safe": safe, "sl": sl,
-        "tp1": tp1, "tp2": tp2, "tp3": tp3,
-        "prob": prob, "tier": tier, "tag": tag,
-        "rr1": rr1, "rr2": rr2, "rr3": rr3,
-        "last_low": main["l"][-1], "last_high": main["h"][-1],
-    }
-
-async def send_signal_safe_triggered(s: Dict[str, Any]):
-    header = f"{s['tag']} *Signal* {s['display']} ({TF}) — *SAFE ENTRY getriggert*"
+async def send_signal(symbol: str, tf: str, direction: str, entry: float, sl: float, tp1: float, tp2: float, tp3: float, prob: int, checklist: List[str]):
     text = (
-        f"{header}\n"
-        f"➡️ *{s['direction']}*\n"
-        f"🎯 Entry (Safe): `{fmt(s['safe'])}`  (Pullback ≈ {SAFE_ENTRY_PCT}%)\n"
-        f"🛡 SL: `{fmt(s['sl'])}`  (≈ -{SL_MARGIN_PCT}% @20x)\n"
-        f"🏁 TP1: `{fmt(s['tp1'])}` (≈ +{TP_MARGIN_PCTS[0]}% @20x, R:R {s['rr1']})\n"
-        f"🏁 TP2: `{fmt(s['tp2'])}` (≈ +{TP_MARGIN_PCTS[1]}% @20x, R:R {s['rr2']})\n"
-        f"🏁 TP3: `{fmt(s['tp3'])}` (≈ +{TP_MARGIN_PCTS[2]}% @20x, R:R {s['rr3']})\n"
-        f"📊 Prob.: *{s['prob']}%*  | Tier: *{s['tier']}*  | HTF: 15m/1h/4h aligned\n"
-        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib 0.5–0.618, Safe-Entry, no Danger-Zone"
+        f"⚡️ *Signal* {symbol} {tf}\n"
+        f"➡️ *{direction}*\n"
+        f"🎯 Entry: `{entry}`\n"
+        f"🛡 SL: `{sl}`\n"
+        f"🏁 TP1: `{tp1}`\n"
+        f"🏁 TP2: `{tp2}`\n"
+        f"🏁 TP3: `{tp3}`\n"
+        f"📈 Prob.: *{prob}%*\n"
+        + (f"✅ {', '.join(checklist)}" if checklist else "")
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
-async def send_followup_be(sym_display: str, direction: str):
-    msg = f"🔔 *Follow-up* {sym_display} — *TP1 erreicht* → SL jetzt auf **BE** setzen."
-    await bot.send_message(chat_id=TG_CHAT_ID, text=msg, parse_mode="Markdown")
+def fetch_df(symbol: str, timeframe: str) -> pd.DataFrame:
+    ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=LOOKBACK)
+    df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+    return df
 
-async def scan_once() -> int:
-    global _last_scan_at, _signals_sent, _last_error
-    sent_now = 0
-    try:
-        async with aiohttp.ClientSession() as session:
-            # 1) Frische Setups einsammeln → _pending
-            tasks = [analyze_symbol(session, s) for s in SYMBOLS]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            now = datetime.now(timezone.utc)
-            for r in results:
-                if not isinstance(r, dict):
+def compute_trend_ok(df: pd.DataFrame) -> Tuple[bool,bool,bool]:
+    # EMA200-Regel je TF: close > ema200 => up
+    up = df["close"].iloc[-1] > ema(df["close"], 200).iloc[-1]
+    down = df["close"].iloc[-1] < ema(df["close"], 200).iloc[-1]
+    return up, down, not math.isnan(df["close"].iloc[-1])
+
+def analyze_trigger(df: pd.DataFrame) -> Dict[str, any]:
+    # Indikatoren auf Trigger-TF (5m)
+    df["ema50"] = ema(df.close, 50)
+    df["ema100"] = ema(df.close, 100)
+    df["ema200"] = ema(df.close, 200)
+    df["rsi"] = rsi(df.close, 14)
+    df["atr"] = atr(df.high, df.low, df.close, 14)
+    df["volma"] = vol_sma(df.volume, 20)
+
+    o, h, l, c, v = df.open, df.high, df.low, df.close, df.volume
+    long_fast  = c.iloc[-1] > df.ema50.iloc[-1] > df.ema100.iloc[-1] and df.rsi.iloc[-1] < 65
+    short_fast = c.iloc[-1] < df.ema50.iloc[-1] < df.ema100.iloc[-1] and df.rsi.iloc[-1] > 35
+
+    bull = bullish_engulf(o, h, l, c)
+    bear = bearish_engulf(o, h, l, c)
+    vol_ok = v.iloc[-1] > df.volma.iloc[-1]
+
+    return {
+        "bull": bull, "bear": bear,
+        "long_fast": long_fast, "short_fast": short_fast,
+        "vol_ok": vol_ok,
+        "atr": float(df.atr.iloc[-1]),
+        "price": float(c.iloc[-1]),
+        "ema200_up": c.iloc[-1] > df.ema200.iloc[-1],
+        "ema200_dn": c.iloc[-1] < df.ema200.iloc[-1],
+    }
+
+async def scan_once():
+    now = time.time()
+    for sym in SYMBOLS:
+        try:
+            # Trigger-TF
+            df5 = fetch_df(sym, TF_TRIGGER)
+            trig = analyze_trigger(df5)
+
+            # Trendfilter auf 15m/1h/4h -> Higher TF must align
+            up_all, dn_all = True, True
+            for tf in TF_FILTERS:
+                df_tf = fetch_df(sym, tf)
+                up, dn, _ = compute_trend_ok(df_tf)
+                up_all &= up
+                dn_all &= dn
+                # Ratelimit beachten
+                time.sleep(ex.rateLimit/1000)
+
+            long_ok = up_all and (trig["bull"] or trig["long_fast"]) and trig["vol_ok"]
+            short_ok = dn_all and (trig["bear"] or trig["short_fast"]) and trig["vol_ok"]
+
+            if long_ok or short_ok:
+                direction = "LONG" if long_ok else "SHORT"
+                prob = prob_score(long_ok, short_ok, trig["vol_ok"], up_all or dn_all,
+                                  trig["ema200_up"] if long_ok else trig["ema200_dn"])
+                entry, sl, tp1, tp2, tp3 = make_levels(direction, trig["price"], trig["atr"])
+                key = f"{sym}:{direction}"
+                if need_throttle(key, now):  # anti-spam 5min
                     continue
-                key = f"{r['symbol']}:{r['direction']}"
-                keep = _pending.get(key)
-                if keep and now - keep["ts"] < timedelta(minutes=PENDING_TTL_MIN):
-                    continue
-                _pending[key] = {**r, "ts": now}
+                checklist = [
+                    "HTF align (15m/1h/4h)",
+                    "Engulf/EMA-Stack",
+                    "Vol>MA",
+                    "EMA200 ok"
+                ]
+                await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, tp3, prob, checklist)
 
-            # 2) Pending prüfen: hat Preis den Safe-Entry berührt?
-            to_delete = []
-            for key, s in list(_pending.items()):
-                if now - s["ts"] > timedelta(minutes=PENDING_TTL_MIN):
-                    to_delete.append(key)
-                    continue
-                try:
-                    o, h, l, c, v = await fetch_klines(session, s["symbol"], TF, 2)
-                except Exception:
-                    continue
-                last_low, last_high = l[-1], h[-1]
-                hit = touched_safe(s["safe"], last_low, last_high, s["is_long"])
-                last_t = _last_sent_at.get(key)
-                ready = True if not last_t else (now - last_t) >= timedelta(minutes=COOLDOWN_MIN)
+        except Exception as e:
+            # Optional: Logging minimal
+            print(f"[scan] {sym} error: {e}")
+        finally:
+            time.sleep(ex.rateLimit/1000)
 
-                if hit and ready:
-                    await send_signal_safe_triggered(s)
-                    _last_sent_at[key] = now
-                    to_delete.append(key)
-                    _signals_sent += 1
-                    sent_now += 1
-                    _active[key] = {
-                        "entry": s["safe"], "tp1": s["tp1"], "is_long": s["is_long"],
-                        "display": s["display"], "direction": s["direction"],
-                        "be_sent": False
-                    }
-
-            # 3) Follow-up: TP1 erreicht? → „SL = BE“
-            for key, pos in list(_active.items()):
-                try:
-                    o, h, l, c, v = await fetch_klines(session, key.split(":")[0], TF, 2)
-                except Exception:
-                    continue
-                last_high, last_low = h[-1], l[-1]
-                if not pos["be_sent"]:
-                    tp_hit = (last_high >= pos["tp1"]) if pos["is_long"] else (last_low <= pos["tp1"])
-                    if tp_hit:
-                        await send_followup_be(pos["display"], pos["direction"])
-                        pos["be_sent"] = True
-
-            for k in to_delete:
-                _pending.pop(k, None)
-
-        _last_scan_at = datetime.now(timezone.utc)
-        _last_error = None
-    except Exception as e:
-        _last_error = str(e)
-    return sent_now
-
-async def scan_loop():
+async def runner():
+    sched = AsyncIOScheduler()
+    sched.add_job(scan_once, "interval", seconds=SCAN_INTERVAL_S, next_run_time=datetime.now(timezone.utc))
+    sched.start()
+    # Background loop to keep running
     while True:
-        await scan_once()
-        await asyncio.sleep(SCAN_INTERVAL_S)
+        await asyncio.sleep(3600)
 
-# ========= API =========
 @app.on_event("startup")
-async def on_start():
-    asyncio.create_task(scan_loop())
+async def _startup():
+    asyncio.create_task(runner())
 
 @app.get("/")
 async def root():
-    return {
-        "ok": True,
-        "mode": "scanner_final3_safe",
-        "tf": TF, "filters": FILTER_TFS,
-        "min_prob": MIN_PROB,
-        "leverage": LEVERAGE,
-        "tp_margin_pcts": TP_MARGIN_PCTS, "sl_margin_pct": SL_MARGIN_PCT,
-        "safe_entry_pct": SAFE_ENTRY_PCT,
-        "min_atr_pct": MIN_ATR_PCT,
-        "danger_zone_pct": DANGER_ZONE_PCT,
-        "pending": len(_pending),
-        "active": len(_active),
-        "last_scan_at": _last_scan_at.isoformat() if _last_scan_at else None,
-        "signals_sent": _signals_sent,
-        "last_error": _last_error,
-    }
+    return {"ok": True, "mode": "scanner", "info": "Background scanner active. TradingView not required."}
 
+# Optional: Manual trigger (GET /scan)
 @app.get("/scan")
 async def manual_scan():
-    n = await scan_once()
-    return {"ok": True, "sent_now": n, "pending": len(_pending), "active": len(_active), "last_error": _last_error}
-
-@app.get("/status")
-async def status():
-    # kompakter Health/Status-Endpunkt für schnelle Checks
-    return {
-        "ok": True,
-        "last_scan_at": _last_scan_at.isoformat() if _last_scan_at else None,
-        "pending": list(_pending.keys()),
-        "active": list(_active.keys()),
-        "signals_sent_total": _signals_sent,
-        "last_error": _last_error,
-    }
-
-@app.get("/test")
-async def test():
-    # Simuliertes Safe-Entry-Signal (BTC LONG) mit deinen Settings
-    entry = 25000.0
-    safe  = make_safe_entry(entry, True)
-    tp1, tp2, tp3, sl = calc_targets_percent(entry, True)
-    text = (
-        f"⚡ *Test-Signal BTC/USDT (5m) — SAFE ENTRY getriggert*\n"
-        f"➡️ *LONG*\n"
-        f"🎯 Entry (Safe): `{fmt(safe)}`  (Pullback ≈ {SAFE_ENTRY_PCT}%)\n"
-        f"🛡 SL: `{fmt(sl)}`  (≈ -{SL_MARGIN_PCT}% @20x)\n"
-        f"🏁 TP1: `{fmt(tp1)}` (≈ +{TP_MARGIN_PCTS[0]}% @20x)\n"
-        f"🏁 TP2: `{fmt(tp2)}` (≈ +{TP_MARGIN_PCTS[1]}% @20x)\n"
-        f"🏁 TP3: `{fmt(tp3)}` (≈ +{TP_MARGIN_PCTS[2]}% @20x)\n"
-        f"📊 Prob.: *85%* | Tier: *STRONG*\n"
-        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib 0.5–0.618, Safe-Entry, no Danger-Zone"
-    )
-    await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
-    return {"ok": True, "test": True}
+    await scan_once()
+    return {"ok": True, "ran": True}
