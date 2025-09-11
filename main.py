@@ -41,7 +41,7 @@ SL_PCT           = SL_MARGIN_PCT / LEVERAGE                 # in Preis-%
 SAFE_ENTRY_PCT   = 0.25    # 0.25% ≈ +5% auf Margin @20x
 
 # Qualitätsfilter
-MIN_PROB         = 75      # nur Setups >= 75%
+MIN_PROB         = 60      # jetzt ab 60% senden (60–69 WEAK, 70–74 MEDIUM, >=75 STRONG)
 MIN_ATR_PCT      = 0.20    # min. ATR in % vom Preis (5m) — verhindert Mikro-Setups
 DANGER_ZONE_PCT  = 0.20    # Abstand in % zu HTF Swing High/Low; näher = Skip
 
@@ -199,6 +199,20 @@ def probability(main: dict, filters: List[dict], is_long: bool) -> int:
     score += 10 if vol_ok else 0
     return min(100, score)
 
+def classify_prob(prob: int) -> Tuple[str, str]:
+    """
+    Gibt (tier, tag) zurück:
+    - ("STRONG","✅ STRONG") für >=75
+    - ("MEDIUM","⚠️ MEDIUM") für 70–74
+    - ("WEAK","⚠️ WEAK") für 60–69
+    """
+    if prob >= 75:
+        return "STRONG", "✅ STRONG"
+    elif prob >= 70:
+        return "MEDIUM", "⚠️ MEDIUM"
+    else:
+        return "WEAK", "⚠️ WEAK"
+
 # ========= CORE ANALYSE =========
 async def analyze_symbol(session, symbol: str):
     # Haupt-TF (5m)
@@ -228,10 +242,11 @@ async def analyze_symbol(session, symbol: str):
     if too_close_to_htf_extremes(main["close"], htf_high, htf_low):
         return None
 
-    # Probability
+    # Probability & Tier
     prob = probability(main, filt, is_long)
     if prob < MIN_PROB:
         return None
+    tier, tag = classify_prob(prob)
 
     # SAFE-Entry
     entry_now = main["close"]
@@ -254,20 +269,22 @@ async def analyze_symbol(session, symbol: str):
         "is_long": is_long,
         "entry_now": entry_now, "safe": safe, "sl": sl,
         "tp1": tp1, "tp2": tp2, "tp3": tp3,
-        "prob": prob, "rr1": rr1, "rr2": rr2, "rr3": rr3,
+        "prob": prob, "tier": tier, "tag": tag,
+        "rr1": rr1, "rr2": rr2, "rr3": rr3,
         "last_low": main["l"][-1], "last_high": main["h"][-1],
     }
 
 async def send_signal_safe_triggered(s: Dict[str, Any]):
+    header = f"{s['tag']} *Signal* {s['display']} ({TF}) — *SAFE ENTRY getriggert*"
     text = (
-        f"⚡ *Signal* {s['display']} ({TF}) — *SAFE ENTRY getriggert*\n"
+        f"{header}\n"
         f"➡️ *{s['direction']}*\n"
         f"🎯 Entry (Safe): `{fmt(s['safe'])}`  (Pullback ≈ {SAFE_ENTRY_PCT}%)\n"
         f"🛡 SL: `{fmt(s['sl'])}`  (≈ -{SL_MARGIN_PCT}% @20x)\n"
         f"🏁 TP1: `{fmt(s['tp1'])}` (≈ +{TP_MARGIN_PCTS[0]}% @20x, R:R {s['rr1']})\n"
         f"🏁 TP2: `{fmt(s['tp2'])}` (≈ +{TP_MARGIN_PCTS[1]}% @20x, R:R {s['rr2']})\n"
         f"🏁 TP3: `{fmt(s['tp3'])}` (≈ +{TP_MARGIN_PCTS[2]}% @20x, R:R {s['rr3']})\n"
-        f"📊 Prob.: *{s['prob']}%*  | HTF: 15m/1h/4h aligned\n"
+        f"📊 Prob.: *{s['prob']}%*  | Tier: *{s['tier']}*  | HTF: 15m/1h/4h aligned\n"
         f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib 0.5–0.618, Safe-Entry, no Danger-Zone"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
@@ -392,7 +409,7 @@ async def test():
         f"🏁 TP1: `{fmt(tp1)}` (≈ +{TP_MARGIN_PCTS[0]}% @20x)\n"
         f"🏁 TP2: `{fmt(tp2)}` (≈ +{TP_MARGIN_PCTS[1]}% @20x)\n"
         f"🏁 TP3: `{fmt(tp3)}` (≈ +{TP_MARGIN_PCTS[2]}% @20x)\n"
-        f"📊 Prob.: *85%*\n"
+        f"📊 Prob.: *85%* | Tier: *STRONG*\n"
         f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib 0.5–0.618, Safe-Entry, no Danger-Zone"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
