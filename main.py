@@ -18,19 +18,22 @@ bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="Auto Scanner → Telegram (Final3 Safe Entry)")
 
 # ========= SETTINGS =========
+# 19 liquide USDT-Paare
 SYMBOLS = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-    "TONUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT",
+    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
+    "ADAUSDT","DOGEUSDT","MATICUSDT","LTCUSDT","SHIBUSDT",
+    "AVAXUSDT","LINKUSDT","DOTUSDT","TRXUSDT","TONUSDT",
+    "NEARUSDT","ATOMUSDT","APTUSDT","OPUSDT",
 ]
 
 TF              = "5m"
 FILTER_TFS      = ["15m", "1h", "4h"]
-SCAN_INTERVAL_S = 60
+SCAN_INTERVAL_S = 300   # alle 5 Minuten scannen
 
 # Leverage & Zielgrößen (auf Margin)
 LEVERAGE         = 20
-TP_MARGIN_PCTS   = [15.0, 20.0, 30.0]       # ≈ Preis +0.75% / +1.00% / +1.50%
-SL_MARGIN_PCT    = 10.0                     # ≈ Preis -0.50%
+TP_MARGIN_PCTS   = [15.0, 20.0, 30.0]       # ≈ Preis +0.75% / +1.00% / +1.50% @20x
+SL_MARGIN_PCT    = 10.0                     # ≈ Preis -0.50% @20x
 TP_PCTS          = [p / LEVERAGE for p in TP_MARGIN_PCTS]   # in Preis-%
 SL_PCT           = SL_MARGIN_PCT / LEVERAGE                 # in Preis-%
 
@@ -83,7 +86,6 @@ def rsi(values: List[float], period: int = 14) -> List[float]:
     return rsis
 
 def atr_pct(o: List[float], h: List[float], l: List[float], c: List[float], period: int = 14) -> float:
-    # Wilder ATR (vereinfachte Variante)
     trs = []
     for i in range(1, len(c)):
         tr = max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1]))
@@ -109,7 +111,6 @@ def make_safe_entry(entry: float, is_long: bool) -> float:
     return entry * (1 - p) if is_long else entry * (1 + p)
 
 def touched_safe(safe: float, last_low: float, last_high: float, is_long: bool) -> bool:
-    # LONG: safe erreicht, wenn Low <= safe; SHORT: wenn High >= safe
     return (last_low <= safe) if is_long else (last_high >= safe)
 
 def calc_targets_percent(entry: float, is_long: bool) -> Tuple[float,float,float,float]:
@@ -125,7 +126,6 @@ def calc_targets_percent(entry: float, is_long: bool) -> Tuple[float,float,float
 
 # ========= SWING & FIB =========
 def swing_high_low(series: List[float], lookback: int = 50) -> Tuple[float, float]:
-    """Findet groben lokalen Swing (High, Low) im Lookback."""
     look = series[-lookback:] if len(series) >= lookback else series[:]
     return max(look), min(look)
 
@@ -133,14 +133,12 @@ def fib_zone_ok(entry_safe: float, swing_low: float, swing_high: float, is_long:
     if swing_high <= 0 or swing_low <= 0 or swing_high == swing_low:
         return False
     if is_long:
-        # Aufwärts-Swing: Low → High
         diff = swing_high - swing_low
         f50  = swing_low + 0.5   * diff
         f618 = swing_low + 0.618 * diff
         lo, hi = (min(f50, f618), max(f50, f618))
         return lo <= entry_safe <= hi
     else:
-        # Abwärts-Swing: High → Low
         diff = swing_high - swing_low
         f50  = swing_high - 0.5   * diff
         f618 = swing_high - 0.618 * diff
@@ -148,8 +146,7 @@ def fib_zone_ok(entry_safe: float, swing_low: float, swing_high: float, is_long:
         return lo <= entry_safe <= hi
 
 def too_close_to_htf_extremes(price: float, htf_high: float, htf_low: float) -> bool:
-    # Danger-Zone: <0.2% vom HTF-High/Low
-    if htf_high <= 0 or htf_low <= 0: 
+    if htf_high <= 0 or htf_low <= 0:
         return False
     up_dist  = abs(htf_high - price) / price * 100.0
     dn_dist  = abs(price - htf_low)  / price * 100.0
@@ -177,10 +174,8 @@ async def indicators(session, symbol: str, interval: str):
     ema_fast = ema(c, 9)[-1]
     ema_slow = ema(c, 21)[-1]
     r = rsi(c, 14)[-1]
-    # Volumen-Spike (> 30% über 20er-Ø)
     v_avg = sum(v[-20:]) / 20
     v_spike = v[-1] > 1.3 * v_avg
-    # ATR%
     atrp = atr_pct(o, h, l, c, 14)
     return {
         "o": o, "h": h, "l": l, "c": c, "v": v,
@@ -208,10 +203,9 @@ def probability(main: dict, filters: List[dict], is_long: bool) -> int:
 async def analyze_symbol(session, symbol: str):
     # Haupt-TF (5m)
     main = await indicators(session, symbol, TF)
-    if not main: 
+    if not main:
         return None
 
-    # Min-ATR% Filter (z. B. ≥ 0.20%)
     if main["atr_pct"] < MIN_ATR_PCT:
         return None
 
@@ -225,10 +219,10 @@ async def analyze_symbol(session, symbol: str):
     # Richtung
     is_long  = (main["ema_fast"] > main["ema_slow"]) and (main["rsi"] >= 48)
     is_short = (main["ema_fast"] < main["ema_slow"]) and (main["rsi"] <= 52)
-    if not (is_long or is_short): 
+    if not (is_long or is_short):
         return None
 
-    # Danger-Zone: Nähe zu HTF Extremes (verwende 1h-Array für Schätzung)
+    # Danger-Zone Nähe zu HTF Extremes
     htf1h = filt[1] if len(filt) >= 2 else filt[-1]
     htf_high, htf_low = max(htf1h["h"][-120:]), min(htf1h["l"][-120:])
     if too_close_to_htf_extremes(main["close"], htf_high, htf_low):
@@ -248,7 +242,7 @@ async def analyze_symbol(session, symbol: str):
     if not fib_zone_ok(safe, sw_low, sw_high, is_long):
         return None
 
-    # Targets/SL (vom Entry-Preis, aber wir rechnen R:R gegen Safe)
+    # Targets/SL
     tp1, tp2, tp3, sl = calc_targets_percent(entry_now, is_long)
     rr1 = rr(safe, tp1, sl, is_long)
     rr2 = rr(safe, tp2, sl, is_long)
@@ -304,18 +298,15 @@ async def scan_once() -> int:
             # 2) Pending prüfen: hat Preis den Safe-Entry berührt?
             to_delete = []
             for key, s in _pending.items():
-                # TTL
                 if now - s["ts"] > timedelta(minutes=PENDING_TTL_MIN):
                     to_delete.append(key)
                     continue
-                # letzte 5m-Kerze holen
                 try:
                     o, h, l, c, v = await fetch_klines(session, s["symbol"], TF, 2)
                 except Exception:
                     continue
                 last_low, last_high = l[-1], h[-1]
                 hit = touched_safe(s["safe"], last_low, last_high, s["is_long"])
-                # Cooldown check
                 last_t = _last_sent_at.get(key)
                 ready = True if not last_t else (now - last_t) >= timedelta(minutes=COOLDOWN_MIN)
 
@@ -325,7 +316,6 @@ async def scan_once() -> int:
                     to_delete.append(key)
                     _signals_sent += 1
                     sent_now += 1
-                    # aktive Position für Followup merken
                     _active[key] = {
                         "entry": s["safe"], "tp1": s["tp1"], "is_long": s["is_long"],
                         "display": s["display"], "direction": s["direction"],
@@ -333,8 +323,7 @@ async def scan_once() -> int:
                     }
 
             # 3) Follow-up: TP1 erreicht? → „SL = BE“
-            to_clear_active = []
-            for key, pos in _active.items():
+            for key, pos in list(_active.items()):
                 try:
                     o, h, l, c, v = await fetch_klines(session, key.split(":")[0], TF, 2)
                 except Exception:
@@ -345,7 +334,6 @@ async def scan_once() -> int:
                     if tp_hit:
                         await send_followup_be(pos["display"], pos["direction"])
                         pos["be_sent"] = True
-                        # wir lassen die Position noch drin (für evtl. spätere Erweiterungen)
 
             for k in to_delete:
                 _pending.pop(k, None)
