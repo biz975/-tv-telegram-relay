@@ -1,4 +1,5 @@
-# main.py — Auto-Scanner mit SAFE-ENTRY, Fib-Retest (per ENV), Danger-Zone, Min-ATR und TP1→SL=BE-Followup
+# main.py — Auto-Scanner mit SAFE-ENTRY, Fib 0.382–0.786, Danger-Zone, Min-ATR,
+#            TP1→SL=BE-Followup und VERBOSE-Report pro Symbol
 import os, asyncio
 from datetime import datetime, timezone, timedelta
 from typing import List, Tuple, Dict, Any
@@ -17,7 +18,6 @@ bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="Auto Scanner → Telegram (Final3 Safe Entry)")
 
 # ========= SETTINGS =========
-# 19 liquide USDT-Paare
 SYMBOLS = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
     "ADAUSDT","DOGEUSDT","MATICUSDT","LTCUSDT","SHIBUSDT",
@@ -27,43 +27,35 @@ SYMBOLS = [
 
 TF              = "5m"
 FILTER_TFS      = ["15m", "1h", "4h"]
-SCAN_INTERVAL_S = 300   # alle 5 Minuten scannen
+SCAN_INTERVAL_S = 300  # alle 5 Minuten
 
-# Leverage & Zielgrößen (auf Margin)
 LEVERAGE         = 20
-TP_MARGIN_PCTS   = [15.0, 20.0, 30.0]       # ≈ Preis +0.75% / +1.00% / +1.50% @20x
-SL_MARGIN_PCT    = 10.0                     # ≈ Preis -0.50% @20x
-TP_PCTS          = [p / LEVERAGE for p in TP_MARGIN_PCTS]   # in Preis-%
-SL_PCT           = SL_MARGIN_PCT / LEVERAGE                 # in Preis-%
+TP_MARGIN_PCTS   = [15.0, 20.0, 30.0]          # (~ +0.75/+1.0/+1.5% @20x)
+SL_MARGIN_PCT    = 10.0                        # (~ -0.5% @20x)
+TP_PCTS          = [p / LEVERAGE for p in TP_MARGIN_PCTS]
+SL_PCT           = SL_MARGIN_PCT / LEVERAGE
 
-# SAFE ENTRY Pullback (vom aktuellen Preis) — leicht gelockert
-SAFE_ENTRY_PCT   = 0.20    # vorher 0.25%
+SAFE_ENTRY_PCT   = 0.20   # gelockert (vorher 0.25)
 
-# Qualitätsfilter — gelockert
-MIN_PROB         = 50      # vorher 60/75
-MIN_ATR_PCT      = 0.15    # vorher 0.20
-DANGER_ZONE_PCT  = 0.15    # vorher 0.20
+# gelockerte Filter
+MIN_PROB         = 50
+MIN_ATR_PCT      = 0.15
+DANGER_ZONE_PCT  = 0.15
 
-# Fib-Zone per ENV steuerbar (Default hier BREIT für mehr Signale)
-# -> spätere Feintuning nur via ENV in Render nötig, kein Code-Change
-FIB_MIN = float(os.getenv("FIB_MIN", "0.382"))
-FIB_MAX = float(os.getenv("FIB_MAX", "0.786"))
-
-# Pending/Anti-Spam
-PENDING_TTL_MIN  = 180     # wie lang warten wir max. auf Safe-Entry?
-COOLDOWN_MIN     = 5       # pro Symbol+Richtung nach Versand
+PENDING_TTL_MIN  = 180
+COOLDOWN_MIN     = 5
 
 # ========= STATE =========
 _last_scan_at: datetime | None = None
 _signals_sent: int = 0
 _last_error: str | None = None
 
-# Warteschlange: key="SYMBOL:LONG|SHORT" → dict mit safe_entry etc.
 _pending: Dict[str, Dict[str, Any]] = {}
-# Cooldown: key -> last sent time
 _last_sent_at: Dict[str, datetime] = {}
-# Aktive Positionen für Follow-ups (TP1 → SL=BE)
-_active: Dict[str, Dict[str, Any]] = {}  # key -> {entry, tp1, is_long, be_sent}
+_active: Dict[str, Dict[str, Any]] = {}
+
+# Neuer Scan-Report (letzte Runde)
+_last_scan_report: Dict[str, Any] = {}
 
 # ========= UTILS =========
 def ema(values: List[float], period: int) -> List[float]:
@@ -117,9 +109,9 @@ def make_safe_entry(entry: float, is_long: bool) -> float:
 def touched_safe(safe: float, last_low: float, last_high: float, is_long: bool) -> bool:
     return (last_low <= safe) if is_long else (last_high >= safe)
 
-def calc_targets_percent(entry: float, is_long: bool) -> Tuple[float,float,float,float]:
-    tp_steps = [p/100.0 for p in TP_PCTS]  # [0.0075, 0.01, 0.015]
-    sl_step  = SL_PCT / 100.0             # 0.005
+def calc_targets_percent(entry: float, is_long: bool):
+    tp_steps = [p/100.0 for p in TP_PCTS]
+    sl_step  = SL_PCT / 100.0
     if is_long:
         tp1 = entry * (1 + tp_steps[0]); tp2 = entry * (1 + tp_steps[1]); tp3 = entry * (1 + tp_steps[2])
         sl  = entry * (1 - sl_step)
@@ -135,23 +127,23 @@ def swing_high_low(series: List[float], lookback: int = 50) -> Tuple[float, floa
 
 def fib_zone_ok(entry_safe: float, swing_low: float, swing_high: float, is_long: bool) -> bool:
     """
-    Prüft, ob entry_safe innerhalb der [FIB_MIN..FIB_MAX]-Zone des aktuellen Swings liegt.
-    LONG:  fib = swing_low  + fib * (swing_high - swing_low)
-    SHORT: fib = swing_high - fib * (swing_high - swing_low)
+    Erlaubt 0.382–0.786 (mehr Treffer):
+      LONG:  low + [0.382..0.786]*(high-low)
+      SHORT: high - [0.382..0.786]*(high-low)
     """
     if swing_high <= 0 or swing_low <= 0 or swing_high == swing_low:
         return False
-
     diff = swing_high - swing_low
     if is_long:
-        lo = swing_low  + FIB_MIN * diff
-        hi = swing_low  + FIB_MAX * diff
+        f_lo = swing_low + 0.382 * diff
+        f_hi = swing_low + 0.786 * diff
+        lo, hi = min(f_lo, f_hi), max(f_lo, f_hi)
+        return lo <= entry_safe <= hi
     else:
-        lo = swing_high - FIB_MAX * diff
-        hi = swing_high - FIB_MIN * diff
-
-    lo, hi = (min(lo, hi), max(lo, hi))
-    return lo <= entry_safe <= hi
+        f_lo = swing_high - 0.786 * diff
+        f_hi = swing_high - 0.382 * diff
+        lo, hi = min(f_lo, f_hi), max(f_lo, f_hi)
+        return lo <= entry_safe <= hi
 
 def too_close_to_htf_extremes(price: float, htf_high: float, htf_low: float) -> bool:
     if htf_high <= 0 or htf_low <= 0:
@@ -160,7 +152,7 @@ def too_close_to_htf_extremes(price: float, htf_high: float, htf_low: float) -> 
     dn_dist  = abs(price - htf_low)  / price * 100.0
     return (up_dist < DANGER_ZONE_PCT) or (dn_dist < DANGER_ZONE_PCT)
 
-# ========= DATA (Binance Klines) =========
+# ========= DATA =========
 BINANCE_BASE = "https://api.binance.com"
 
 async def fetch_klines(session: aiohttp.ClientSession, symbol: str, interval: str, limit: int = 300):
@@ -208,79 +200,71 @@ def probability(main: dict, filters: List[dict], is_long: bool) -> int:
     return min(100, score)
 
 def classify_prob(prob: int) -> Tuple[str, str]:
-    """
-    Gibt (tier, tag) zurück:
-    - ("STRONG","✅ STRONG") für >=75
-    - ("MEDIUM","⚠️ MEDIUM") für 60–74
-    - ("WEAK","⚠️ WEAK") für 50–59
-    """
-    if prob >= 75:
-        return "STRONG", "✅ STRONG"
-    elif prob >= 60:
-        return "MEDIUM", "⚠️ MEDIUM"
-    else:
-        return "WEAK", "⚠️ WEAK"
+    if prob >= 75: return "STRONG", "✅ STRONG"
+    if prob >= 60: return "MEDIUM", "⚠️ MEDIUM"
+    return "WEAK", "⚠️ WEAK"
 
-# ========= CORE ANALYSE =========
-async def analyze_symbol(session, symbol: str):
-    # Haupt-TF (5m)
-    main = await indicators(session, symbol, TF)
-    if not main:
-        return None
+# ========= CORE (mit VERBOSE) =========
+async def analyze_symbol_verbose(session, symbol: str) -> Tuple[Any, List[str]]:
+    notes = []
+    try:
+        main = await indicators(session, symbol, TF)
+        if not main:
+            return None, ["insufficient candles"]
 
-    if main["atr_pct"] < MIN_ATR_PCT:
-        return None
+        notes.append(f"ATR={main['atr_pct']:.3f}% (min {MIN_ATR_PCT}%)")
+        if main["atr_pct"] < MIN_ATR_PCT:
+            return None, notes + [f"REJECT: ATR < {MIN_ATR_PCT}%"]
 
-    # HTF Filter (15m/1h/4h)
-    filt = []
-    for tf in FILTER_TFS:
-        x = await indicators(session, symbol, tf)
-        if not x: return None
-        filt.append(x)
+        filt = []
+        for tf in FILTER_TFS:
+            x = await indicators(session, symbol, tf)
+            if not x:
+                return None, notes + [f"REJECT: missing {tf} klines"]
+            filt.append(x)
 
-    # Richtung
-    is_long  = (main["ema_fast"] > main["ema_slow"]) and (main["rsi"] >= 48)
-    is_short = (main["ema_fast"] < main["ema_slow"]) and (main["rsi"] <= 52)
-    if not (is_long or is_short):
-        return None
+        is_long  = (main["ema_fast"] > main["ema_slow"]) and (main["rsi"] >= 48)
+        is_short = (main["ema_fast"] < main["ema_slow"]) and (main["rsi"] <= 52)
+        dir_txt = "LONG" if is_long else ("SHORT" if is_short else "NONE")
+        notes.append(f"direction={dir_txt} (EMA9/21 & RSI)")
+        if not (is_long or is_short):
+            return None, notes + ["REJECT: no clear bias"]
 
-    # Danger-Zone Nähe zu HTF Extremes
-    htf1h = filt[1] if len(filt) >= 2 else filt[-1]
-    htf_high, htf_low = max(htf1h["h"][-120:]), min(htf1h["l"][-120:])
-    if too_close_to_htf_extremes(main["close"], htf_high, htf_low):
-        return None
+        htf1h = filt[1] if len(filt) >= 2 else filt[-1]
+        htf_high, htf_low = max(htf1h["h"][-120:]), min(htf1h["l"][-120:])
+        if too_close_to_htf_extremes(main["close"], htf_high, htf_low):
+            return None, notes + [f"REJECT: danger-zone < {DANGER_ZONE_PCT}% to HTF extremes"]
 
-    # Probability & Tier
-    prob = probability(main, filt, is_long)
-    if prob < MIN_PROB:
-        return None
-    tier, tag = classify_prob(prob)
+        prob = probability(main, filt, is_long)
+        notes.append(f"prob={prob}% (min {MIN_PROB}%)")
+        if prob < MIN_PROB:
+            return None, notes + [f"REJECT: prob < {MIN_PROB}%"]
+        tier, tag = classify_prob(prob)
 
-    # SAFE-Entry
-    entry_now = main["close"]
-    safe      = make_safe_entry(entry_now, is_long)
+        entry_now = main["close"]
+        safe      = make_safe_entry(entry_now, is_long)
+        sw_high, sw_low = swing_high_low(main["c"], lookback=50)
+        in_fib = fib_zone_ok(safe, sw_low, sw_high, is_long)
+        notes.append(f"fib(0.382–0.786)={'OK' if in_fib else 'NO'}")
+        if not in_fib:
+            return None, notes + ["REJECT: safe-entry not in fib zone"]
 
-    # Fib-Retest Pflicht (5m Swing)
-    sw_high, sw_low = swing_high_low(main["c"], lookback=50)
-    if not fib_zone_ok(safe, sw_low, sw_high, is_long):
-        return None
-
-    # Targets/SL
-    tp1, tp2, tp3, sl = calc_targets_percent(entry_now, is_long)
-    rr1 = rr(safe, tp1, sl, is_long)
-    rr2 = rr(safe, tp2, sl, is_long)
-    rr3 = rr(safe, tp3, sl, is_long)
-
-    return {
-        "symbol": symbol, "display": symbol.replace("USDT","/USDT"),
-        "direction": "LONG" if is_long else "SHORT",
-        "is_long": is_long,
-        "entry_now": entry_now, "safe": safe, "sl": sl,
-        "tp1": tp1, "tp2": tp2, "tp3": tp3,
-        "prob": prob, "tier": tier, "tag": tag,
-        "rr1": rr1, "rr2": rr2, "rr3": rr3,
-        "last_low": main["l"][-1], "last_high": main["h"][-1],
-    }
+        tp1, tp2, tp3, sl = calc_targets_percent(entry_now, is_long)
+        setup = {
+            "symbol": symbol, "display": symbol.replace("USDT","/USDT"),
+            "direction": "LONG" if is_long else "SHORT",
+            "is_long": is_long,
+            "entry_now": entry_now, "safe": safe, "sl": sl,
+            "tp1": tp1, "tp2": tp2, "tp3": tp3,
+            "prob": prob, "tier": tier, "tag": tag,
+            "rr1": rr(safe, tp1, sl, is_long),
+            "rr2": rr(safe, tp2, sl, is_long),
+            "rr3": rr(safe, tp3, sl, is_long),
+            "last_low": main["l"][-1], "last_high": main["h"][-1],
+        }
+        return setup, notes + ["ACCEPT"]
+    except Exception as e:
+        return None, notes + [f"ERROR: {e}"]
 
 async def send_signal_safe_triggered(s: Dict[str, Any]):
     header = f"{s['tag']} *Signal* {s['display']} ({TF}) — *SAFE ENTRY getriggert*"
@@ -293,7 +277,7 @@ async def send_signal_safe_triggered(s: Dict[str, Any]):
         f"🏁 TP2: `{fmt(s['tp2'])}` (≈ +{TP_MARGIN_PCTS[1]}% @20x, R:R {s['rr2']})\n"
         f"🏁 TP3: `{fmt(s['tp3'])}` (≈ +{TP_MARGIN_PCTS[2]}% @20x, R:R {s['rr3']})\n"
         f"📊 Prob.: *{s['prob']}%*  | Tier: *{s['tier']}*  | HTF: 15m/1h/4h aligned\n"
-        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib {FIB_MIN}–{FIB_MAX}, Safe-Entry, no Danger-Zone"
+        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib 0.382–0.786, Safe-Entry, no Danger-Zone"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
@@ -302,25 +286,34 @@ async def send_followup_be(sym_display: str, direction: str):
     await bot.send_message(chat_id=TG_CHAT_ID, text=msg, parse_mode="Markdown")
 
 async def scan_once() -> int:
-    global _last_scan_at, _signals_sent, _last_error
+    global _last_scan_at, _signals_sent, _last_error, _last_scan_report
     sent_now = 0
+    _last_scan_report = {"ts": datetime.now(timezone.utc).isoformat(), "symbols": {}}
     try:
         async with aiohttp.ClientSession() as session:
-            # 1) Frische Setups einsammeln → _pending
-            tasks = [analyze_symbol(session, s) for s in SYMBOLS]
+            # 1) Analyse pro Symbol (mit Gründen)
+            tasks = [analyze_symbol_verbose(session, s) for s in SYMBOLS]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             now = datetime.now(timezone.utc)
 
-            for r in results:
-                if not isinstance(r, dict):
+            for sym, res in zip(SYMBOLS, results):
+                if isinstance(res, Exception):
+                    _last_scan_report["symbols"][sym] = {"notes": [f"ERROR: {res}"]}
                     continue
-                key = f"{r['symbol']}:{r['direction']}"
+
+                setup, notes = res
+                _last_scan_report["symbols"][sym] = {"notes": notes}
+
+                if not isinstance(setup, dict):
+                    continue
+
+                key = f"{setup['symbol']}:{setup['direction']}"
                 keep = _pending.get(key)
                 if keep and now - keep["ts"] < timedelta(minutes=PENDING_TTL_MIN):
                     continue
-                _pending[key] = {**r, "ts": now}
+                _pending[key] = {**setup, "ts": now}
 
-            # 2) Pending prüfen: hat Preis den Safe-Entry berührt?
+            # 2) Pending → Safe-Entry getriggert?
             to_delete = []
             for key, s in list(_pending.items()):
                 if now - s["ts"] > timedelta(minutes=PENDING_TTL_MIN):
@@ -347,7 +340,7 @@ async def scan_once() -> int:
                         "be_sent": False
                     }
 
-            # 3) Follow-up: TP1 erreicht? → „SL = BE“
+            # 3) Follow-up: TP1 → SL=BE
             for key, pos in list(_active.items()):
                 try:
                     o, h, l, c, v = await fetch_klines(session, key.split(":")[0], TF, 2)
@@ -391,7 +384,6 @@ async def root():
         "safe_entry_pct": SAFE_ENTRY_PCT,
         "min_atr_pct": MIN_ATR_PCT,
         "danger_zone_pct": DANGER_ZONE_PCT,
-        "fib_min": FIB_MIN, "fib_max": FIB_MAX,   # Sichtbar im Status
         "pending": len(_pending),
         "active": len(_active),
         "last_scan_at": _last_scan_at.isoformat() if _last_scan_at else None,
@@ -402,11 +394,18 @@ async def root():
 @app.get("/scan")
 async def manual_scan():
     n = await scan_once()
-    return {"ok": True, "sent_now": n, "pending": len(_pending), "active": len(_active), "last_error": _last_error}
+    # kleine, kompakte Zusammenfassung: letztes Tag pro Symbol
+    compact = {s: (info["notes"][-1] if info.get("notes") else "") for s, info in _last_scan_report.get("symbols", {}).items()}
+    return {"ok": True, "sent_now": n, "pending": len(_pending), "active": len(_active),
+            "last_error": _last_error, "summary": compact}
+
+@app.get("/report")
+async def report():
+    # Voller Report der letzten Runde (inkl. aller Notizen je Symbol)
+    return {"ok": True, "report": _last_scan_report}
 
 @app.get("/test")
 async def test():
-    # Simuliertes Safe-Entry-Signal (BTC LONG) mit deinen Settings
     entry = 25000.0
     safe  = make_safe_entry(entry, True)
     tp1, tp2, tp3, sl = calc_targets_percent(entry, True)
@@ -419,7 +418,7 @@ async def test():
         f"🏁 TP2: `{fmt(tp2)}` (≈ +{TP_MARGIN_PCTS[1]}% @20x)\n"
         f"🏁 TP3: `{fmt(tp3)}` (≈ +{TP_MARGIN_PCTS[2]}% @20x)\n"
         f"📊 Prob.: *85%* | Tier: *STRONG*\n"
-        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib {FIB_MIN}–{FIB_MAX}, Safe-Entry, no Danger-Zone"
+        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib 0.382–0.786, Safe-Entry, no Danger-Zone"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True}
