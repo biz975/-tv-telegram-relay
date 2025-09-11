@@ -1,6 +1,6 @@
 # main.py — Auto-Scanner mit SAFE-ENTRY, Fib 0.382–0.786, Danger-Zone, Min-ATR,
-#            TP1→SL=BE-Followup und VERBOSE-Report pro Symbol
-import os, asyncio
+#            TP1→SL=BE-Followup, VERBOSE-Report und Binance(451/429)-Fix
+import os, asyncio, random
 from datetime import datetime, timezone, timedelta
 from typing import List, Tuple, Dict, Any
 
@@ -54,7 +54,7 @@ _pending: Dict[str, Dict[str, Any]] = {}
 _last_sent_at: Dict[str, datetime] = {}
 _active: Dict[str, Dict[str, Any]] = {}
 
-# Neuer Scan-Report (letzte Runde)
+# Scan-Report (letzte Runde)
 _last_scan_report: Dict[str, Any] = {}
 
 # ========= UTILS =========
@@ -126,11 +126,7 @@ def swing_high_low(series: List[float], lookback: int = 50) -> Tuple[float, floa
     return max(look), min(look)
 
 def fib_zone_ok(entry_safe: float, swing_low: float, swing_high: float, is_long: bool) -> bool:
-    """
-    Erlaubt 0.382–0.786 (mehr Treffer):
-      LONG:  low + [0.382..0.786]*(high-low)
-      SHORT: high - [0.382..0.786]*(high-low)
-    """
+    """Erlaubt 0.382–0.786 (mehr Treffer)."""
     if swing_high <= 0 or swing_low <= 0 or swing_high == swing_low:
         return False
     diff = swing_high - swing_low
@@ -154,18 +150,41 @@ def too_close_to_htf_extremes(price: float, htf_high: float, htf_low: float) -> 
 
 # ========= DATA =========
 BINANCE_BASE = "https://api.binance.com"
+BROWSER_HEADERS = {
+    # Cloudflare/451-Bypass: etwas wie ein normaler Browser aussehen
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
 
 async def fetch_klines(session: aiohttp.ClientSession, symbol: str, interval: str, limit: int = 300):
+    """Mit Headern + Retry gegen 451/429."""
     url = f"{BINANCE_BASE}/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    async with session.get(url, timeout=20) as r:
-        r.raise_for_status()
-        raw = await r.json()
-        opens  = [float(x[1]) for x in raw]
-        highs  = [float(x[2]) for x in raw]
-        lows   = [float(x[3]) for x in raw]
-        closes = [float(x[4]) for x in raw]
-        vols   = [float(x[5]) for x in raw]
-        return opens, highs, lows, closes, vols
+    tries = 4
+    backoff = 0.6
+    for i in range(tries):
+        try:
+            async with session.get(url, timeout=20) as r:
+                if r.status in (429, 451, 403, 520, 525):
+                    # leichte Pause & Retry
+                    await asyncio.sleep(backoff + random.random() * 0.4)
+                    backoff *= 1.6
+                    continue
+                r.raise_for_status()
+                raw = await r.json()
+                opens  = [float(x[1]) for x in raw]
+                highs  = [float(x[2]) for x in raw]
+                lows   = [float(x[3]) for x in raw]
+                closes = [float(x[4]) for x in raw]
+                vols   = [float(x[5]) for x in raw]
+                return opens, highs, lows, closes, vols
+        except Exception:
+            await asyncio.sleep(backoff + random.random() * 0.4)
+            backoff *= 1.6
+    raise RuntimeError(f"fetch_klines failed for {symbol} {interval}")
 
 async def indicators(session, symbol: str, interval: str):
     o, h, l, c, v = await fetch_klines(session, symbol, interval)
@@ -290,8 +309,8 @@ async def scan_once() -> int:
     sent_now = 0
     _last_scan_report = {"ts": datetime.now(timezone.utc).isoformat(), "symbols": {}}
     try:
-        async with aiohttp.ClientSession() as session:
-            # 1) Analyse pro Symbol (mit Gründen)
+        # Session mit Default-Headers (Browser)
+        async with aiohttp.ClientSession(headers=BROWSER_HEADERS) as session:
             tasks = [analyze_symbol_verbose(session, s) for s in SYMBOLS]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             now = datetime.now(timezone.utc)
@@ -313,7 +332,7 @@ async def scan_once() -> int:
                     continue
                 _pending[key] = {**setup, "ts": now}
 
-            # 2) Pending → Safe-Entry getriggert?
+            # Pending → Safe-Entry getriggert?
             to_delete = []
             for key, s in list(_pending.items()):
                 if now - s["ts"] > timedelta(minutes=PENDING_TTL_MIN):
@@ -340,7 +359,7 @@ async def scan_once() -> int:
                         "be_sent": False
                     }
 
-            # 3) Follow-up: TP1 → SL=BE
+            # Follow-up: TP1 → SL=BE
             for key, pos in list(_active.items()):
                 try:
                     o, h, l, c, v = await fetch_klines(session, key.split(":")[0], TF, 2)
@@ -372,6 +391,10 @@ async def scan_loop():
 async def on_start():
     asyncio.create_task(scan_loop())
 
+@app.get("/health")
+async def health():
+    return {"ok": True, "service": "scanner", "last_error": _last_error}
+
 @app.get("/")
 async def root():
     return {
@@ -394,14 +417,13 @@ async def root():
 @app.get("/scan")
 async def manual_scan():
     n = await scan_once()
-    # kleine, kompakte Zusammenfassung: letztes Tag pro Symbol
-    compact = {s: (info["notes"][-1] if info.get("notes") else "") for s, info in _last_scan_report.get("symbols", {}).items()}
+    compact = {s: (info["notes"][-1] if info.get("notes") else "")
+               for s, info in _last_scan_report.get("symbols", {}).items()}
     return {"ok": True, "sent_now": n, "pending": len(_pending), "active": len(_active),
             "last_error": _last_error, "summary": compact}
 
 @app.get("/report")
 async def report():
-    # Voller Report der letzten Runde (inkl. aller Notizen je Symbol)
     return {"ok": True, "report": _last_scan_report}
 
 @app.get("/test")
