@@ -1,4 +1,4 @@
-# main.py — Auto-Scanner mit SAFE-ENTRY, Fib-Retest, Danger-Zone, Min-ATR und TP1→SL=BE-Followup
+# main.py — Auto-Scanner mit SAFE-ENTRY, Fib-Retest (per ENV), Danger-Zone, Min-ATR und TP1→SL=BE-Followup
 import os, asyncio
 from datetime import datetime, timezone, timedelta
 from typing import List, Tuple, Dict, Any
@@ -43,6 +43,11 @@ SAFE_ENTRY_PCT   = 0.20    # vorher 0.25%
 MIN_PROB         = 50      # vorher 60/75
 MIN_ATR_PCT      = 0.15    # vorher 0.20
 DANGER_ZONE_PCT  = 0.15    # vorher 0.20
+
+# Fib-Zone per ENV steuerbar (Default hier BREIT für mehr Signale)
+# -> spätere Feintuning nur via ENV in Render nötig, kein Code-Change
+FIB_MIN = float(os.getenv("FIB_MIN", "0.382"))
+FIB_MAX = float(os.getenv("FIB_MAX", "0.786"))
 
 # Pending/Anti-Spam
 PENDING_TTL_MIN  = 180     # wie lang warten wir max. auf Safe-Entry?
@@ -129,20 +134,24 @@ def swing_high_low(series: List[float], lookback: int = 50) -> Tuple[float, floa
     return max(look), min(look)
 
 def fib_zone_ok(entry_safe: float, swing_low: float, swing_high: float, is_long: bool) -> bool:
+    """
+    Prüft, ob entry_safe innerhalb der [FIB_MIN..FIB_MAX]-Zone des aktuellen Swings liegt.
+    LONG:  fib = swing_low  + fib * (swing_high - swing_low)
+    SHORT: fib = swing_high - fib * (swing_high - swing_low)
+    """
     if swing_high <= 0 or swing_low <= 0 or swing_high == swing_low:
         return False
+
+    diff = swing_high - swing_low
     if is_long:
-        diff = swing_high - swing_low
-        f50  = swing_low + 0.5   * diff
-        f618 = swing_low + 0.618 * diff
-        lo, hi = (min(f50, f618), max(f50, f618))
-        return lo <= entry_safe <= hi
+        lo = swing_low  + FIB_MIN * diff
+        hi = swing_low  + FIB_MAX * diff
     else:
-        diff = swing_high - swing_low
-        f50  = swing_high - 0.5   * diff
-        f618 = swing_high - 0.618 * diff
-        lo, hi = (min(f50, f618), max(f50, f618))
-        return lo <= entry_safe <= hi
+        lo = swing_high - FIB_MAX * diff
+        hi = swing_high - FIB_MIN * diff
+
+    lo, hi = (min(lo, hi), max(lo, hi))
+    return lo <= entry_safe <= hi
 
 def too_close_to_htf_extremes(price: float, htf_high: float, htf_low: float) -> bool:
     if htf_high <= 0 or htf_low <= 0:
@@ -284,7 +293,7 @@ async def send_signal_safe_triggered(s: Dict[str, Any]):
         f"🏁 TP2: `{fmt(s['tp2'])}` (≈ +{TP_MARGIN_PCTS[1]}% @20x, R:R {s['rr2']})\n"
         f"🏁 TP3: `{fmt(s['tp3'])}` (≈ +{TP_MARGIN_PCTS[2]}% @20x, R:R {s['rr3']})\n"
         f"📊 Prob.: *{s['prob']}%*  | Tier: *{s['tier']}*  | HTF: 15m/1h/4h aligned\n"
-        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib 0.5–0.618, Safe-Entry, no Danger-Zone"
+        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib {FIB_MIN}–{FIB_MAX}, Safe-Entry, no Danger-Zone"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
@@ -382,6 +391,7 @@ async def root():
         "safe_entry_pct": SAFE_ENTRY_PCT,
         "min_atr_pct": MIN_ATR_PCT,
         "danger_zone_pct": DANGER_ZONE_PCT,
+        "fib_min": FIB_MIN, "fib_max": FIB_MAX,   # Sichtbar im Status
         "pending": len(_pending),
         "active": len(_active),
         "last_scan_at": _last_scan_at.isoformat() if _last_scan_at else None,
@@ -409,7 +419,7 @@ async def test():
         f"🏁 TP2: `{fmt(tp2)}` (≈ +{TP_MARGIN_PCTS[1]}% @20x)\n"
         f"🏁 TP3: `{fmt(tp3)}` (≈ +{TP_MARGIN_PCTS[2]}% @20x)\n"
         f"📊 Prob.: *85%* | Tier: *STRONG*\n"
-        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib 0.5–0.618, Safe-Entry, no Danger-Zone"
+        f"✅ Final3: EMA-Stack, RSI-Bias, Volumen, Fib {FIB_MIN}–{FIB_MAX}, Safe-Entry, no Danger-Zone"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True}
