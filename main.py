@@ -6,7 +6,6 @@ from typing import List, Tuple, Dict, Any
 from fastapi import FastAPI
 from telegram import Bot
 import aiohttp
-import math
 
 # ========= ENV =========
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -37,13 +36,13 @@ SL_MARGIN_PCT    = 10.0                     # ≈ Preis -0.50% @20x
 TP_PCTS          = [p / LEVERAGE for p in TP_MARGIN_PCTS]   # in Preis-%
 SL_PCT           = SL_MARGIN_PCT / LEVERAGE                 # in Preis-%
 
-# SAFE ENTRY Pullback (vom aktuellen Preis)
-SAFE_ENTRY_PCT   = 0.25    # 0.25% ≈ +5% auf Margin @20x
+# SAFE ENTRY Pullback (vom aktuellen Preis) — leicht gelockert
+SAFE_ENTRY_PCT   = 0.20    # vorher 0.25%
 
-# Qualitätsfilter
-MIN_PROB         = 60      # jetzt ab 60% senden (60–69 WEAK, 70–74 MEDIUM, >=75 STRONG)
-MIN_ATR_PCT      = 0.20    # min. ATR in % vom Preis (5m) — verhindert Mikro-Setups
-DANGER_ZONE_PCT  = 0.20    # Abstand in % zu HTF Swing High/Low; näher = Skip
+# Qualitätsfilter — gelockert
+MIN_PROB         = 50      # vorher 60/75
+MIN_ATR_PCT      = 0.15    # vorher 0.20
+DANGER_ZONE_PCT  = 0.15    # vorher 0.20
 
 # Pending/Anti-Spam
 PENDING_TTL_MIN  = 180     # wie lang warten wir max. auf Safe-Entry?
@@ -114,8 +113,8 @@ def touched_safe(safe: float, last_low: float, last_high: float, is_long: bool) 
     return (last_low <= safe) if is_long else (last_high >= safe)
 
 def calc_targets_percent(entry: float, is_long: bool) -> Tuple[float,float,float,float]:
-    tp_steps = [p/100.0 for p in TP_PCTS]  # z.B. [0.0075, 0.01, 0.015]
-    sl_step  = SL_PCT / 100.0             # z.B. 0.005
+    tp_steps = [p/100.0 for p in TP_PCTS]  # [0.0075, 0.01, 0.015]
+    sl_step  = SL_PCT / 100.0             # 0.005
     if is_long:
         tp1 = entry * (1 + tp_steps[0]); tp2 = entry * (1 + tp_steps[1]); tp3 = entry * (1 + tp_steps[2])
         sl  = entry * (1 - sl_step)
@@ -203,12 +202,12 @@ def classify_prob(prob: int) -> Tuple[str, str]:
     """
     Gibt (tier, tag) zurück:
     - ("STRONG","✅ STRONG") für >=75
-    - ("MEDIUM","⚠️ MEDIUM") für 70–74
-    - ("WEAK","⚠️ WEAK") für 60–69
+    - ("MEDIUM","⚠️ MEDIUM") für 60–74
+    - ("WEAK","⚠️ WEAK") für 50–59
     """
     if prob >= 75:
         return "STRONG", "✅ STRONG"
-    elif prob >= 70:
+    elif prob >= 60:
         return "MEDIUM", "⚠️ MEDIUM"
     else:
         return "WEAK", "⚠️ WEAK"
@@ -314,7 +313,7 @@ async def scan_once() -> int:
 
             # 2) Pending prüfen: hat Preis den Safe-Entry berührt?
             to_delete = []
-            for key, s in _pending.items():
+            for key, s in list(_pending.items()):
                 if now - s["ts"] > timedelta(minutes=PENDING_TTL_MIN):
                     to_delete.append(key)
                     continue
