@@ -1,5 +1,5 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
-# STRIKT + S/R-Ziele (15m) + Scan alle 15 min
+# STRIKT + Safe-Entry (Fib 0.5–0.618 Pullback, 5m) + S/R-Ziele (15m) + Scan alle 15 min
 
 import os, asyncio, time, math
 from datetime import datetime, timezone
@@ -26,24 +26,30 @@ SYMBOLS = [
 ]
 
 # ====== Analyse & Scan ======
-TF_TRIGGER = "5m"                  # Signal-TF (wie gehabt)
+TF_TRIGGER = "5m"                  # Signal-TF
 TF_FILTERS = ["15m","1h","4h"]     # Trendfilter (streng)
 LOOKBACK = 300
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
+# ====== Safe-Entry (Pullback in Fib-Zone auf 5m) ======
+SAFE_ENTRY_REQUIRED = True         # Safe-Entry ist KO-Kriterium
+PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung (5m)
+PIVOT_RIGHT_TRIG = 3
+FIB_TOL_PCT = 0.10 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
+
 # ====== S/R (15m) Einstellungen ======
 SR_TF = "15m"
-PIVOT_LEFT = 3                      # Pivot-Breite für Swings
+PIVOT_LEFT = 3                      # Pivot-Breite für Swings (15m)
 PIVOT_RIGHT = 3
 CLUSTER_PCT = 0.15 / 100.0          # Cluster-Toleranz (±0.15 %)
 MIN_STRENGTH = 3                    # min. Anzahl an Swings für „starkes“ Level
 TP2_FACTOR = 1.20                   # TP2 = Entry + 1.2 * (TP1-Entry) (bzw. Short symmetrisch)
 
-# ====== ATR-Fallback (wie bisher) ======
+# ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.5
 TP1_ATR = 1.0
 TP2_ATR = 1.8
-TP3_ATR = 2.6   # wird in dieser Version nur als Fallback mitverwendet
+TP3_ATR = 2.6
 
 # ====== STRIKTE Checklisten-Settings ======
 MIN_ATR_PCT        = 0.20       # min ATR% vom Preis
@@ -57,7 +63,7 @@ if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
 bot = Bot(token=TG_TOKEN)
-app = FastAPI(title="MEXC Auto Scanner → Telegram (STRIKT + S/R)")
+app = FastAPI(title="MEXC Auto Scanner → Telegram (STRIKT + Safe-Entry + S/R)")
 
 ex = ccxt.mexc({"enableRateLimit": True})
 
@@ -130,17 +136,68 @@ def analyze_trigger(df: pd.DataFrame) -> Dict[str, Any]:
         "rsi": float(df.rsi.iloc[-1]),
     }
 
+# ====== Safe-Entry (letzte Impulsbewegung per Pivots, 5m) ======
+def find_pivot_indices(values: List[float], left: int, right: int, is_high: bool) -> List[int]:
+    idxs = []
+    n = len(values)
+    for i in range(left, n - right):
+        left_side = values[i-left:i]
+        right_side = values[i+1:i+1+right]
+        if is_high:
+            if all(values[i] > v for v in left_side) and all(values[i] > v for v in right_side):
+                idxs.append(i)
+        else:
+            if all(values[i] < v for v in left_side) and all(values[i] < v for v in right_side):
+                idxs.append(i)
+    return idxs
+
+def last_impulse(df: pd.DataFrame) -> Tuple[Tuple[int,float], Tuple[int,float]] | None:
+    """Gibt ((lo_idx, lo_val),(hi_idx, hi_val)) der letzten aufeinanderfolgenden Low→High oder High→Low Sequenz zurück."""
+    highs = df["high"].values
+    lows  = df["low"].values
+    hi_idx = find_pivot_indices(list(highs), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, True)
+    lo_idx = find_pivot_indices(list(lows ), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, False)
+    if not hi_idx or not lo_idx:
+        return None
+    last_hi_i = hi_idx[-1]
+    last_lo_i = lo_idx[-1]
+    # Versuche, ein Paar zu bauen, das zeitlich korrekt ist (low vor high oder high vor low)
+    if last_lo_i < last_hi_i:
+        return ((last_lo_i, lows[last_lo_i]), (last_hi_i, highs[last_hi_i]))
+    elif last_hi_i < last_lo_i:
+        return ((last_lo_i, lows[last_lo_i]), (last_hi_i, highs[last_hi_i]))
+    return None
+
+def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]], direction: str) -> Tuple[bool, Tuple[float,float]]:
+    """Prüft, ob price in der 0.5–0.618 Fib-Zone (±Toleranz) liegt. Liefert (ok, (z_min, z_max))."""
+    (lo_i, lo_v), (hi_i, hi_v) = impulse
+    if hi_i == lo_i:
+        return (False, (0.0, 0.0))
+    if hi_i > lo_i:
+        # Aufwärts-Impuls (long-kandidat): low -> high
+        fib50  = lo_v + 0.5  * (hi_v - lo_v)
+        fib618 = lo_v + 0.618 * (hi_v - lo_v)
+        zmin, zmax = sorted([fib50, fib618])
+        zmin *= (1 - FIB_TOL_PCT)
+        zmax *= (1 + FIB_TOL_PCT)
+        ok = (direction == "LONG") and (zmin <= price <= zmax)
+        return (ok, (zmin, zmax))
+    else:
+        # Abwärts-Impuls (short-kandidat): high -> low
+        fib50  = hi_v - 0.5  * (hi_v - lo_v)
+        fib618 = hi_v - 0.618 * (hi_v - lo_v)
+        zmin, zmax = sorted([fib618, fib50])  # bei Shorts liegt 0.618 unter 0.5
+        zmin *= (1 - FIB_TOL_PCT)
+        zmax *= (1 + FIB_TOL_PCT)
+        ok = (direction == "SHORT") and (zmin <= price <= zmax)
+        return (ok, (zmin, zmax))
+
 # ====== S/R-Ermittlung (15m) ======
 def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
-    """
-    Liefert (res_levels, sup_levels) als Liste von (level_price, strength)
-    - strength = Anzahl an Swings im Cluster (je höher, desto „stärker“)
-    """
     highs = df["high"].values
     lows  = df["low"].values
     n = len(df)
 
-    # Roh-Swings sammeln
     swing_highs, swing_lows = [], []
 
     for i in range(PIVOT_LEFT, n - PIVOT_RIGHT):
@@ -154,7 +211,6 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
         if all(lows[i] < left) and all(lows[i] < right):
             swing_lows.append(lows[i])
 
-    # Clustern in Preisnähe
     def cluster_levels(values: List[float], tol_pct: float) -> List[Tuple[float,int]]:
         values = sorted(values)
         clusters = []
@@ -169,7 +225,6 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
                 clusters.append( (sum(cluster)/len(cluster), len(cluster)) )
                 cluster = [x]
         clusters.append( (sum(cluster)/len(cluster), len(cluster)) )
-        # absteigend nach Stärke
         clusters.sort(key=lambda t: (t[1], t[0]), reverse=True)
         return clusters
 
@@ -179,10 +234,6 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
     return res_clusters, sup_clusters
 
 def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: str, min_strength: int) -> float | None:
-    """
-    Wählt das nächstgelegene Level in richtiger Richtung mit mind. 'min_strength'.
-    direction: "LONG" → Widerstand > price, "SHORT" → Support < price
-    """
     candidates = []
     for price, strength in levels:
         if strength < min_strength:
@@ -193,22 +244,15 @@ def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: s
             candidates.append(price)
     if not candidates:
         return None
-    # für LONG das kleinste über ref, für SHORT das größte unter ref
     return min(candidates) if direction == "LONG" else max(candidates)
 
 def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,float,float,bool]:
-    """
-    Bestimmt SL/TP mithilfe von 15m Support/Resistance.
-    Rückgabe: entry, sl, tp1, tp2, tp3, used_sr (bool)
-    Fallback auf ATR, falls kein gutes Level gefunden wird.
-    """
     res_lvls, sup_lvls = find_pivots_levels(df_sr)
 
     if direction == "LONG":
         tp1_sr = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
         sl_sr  = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
         if tp1_sr is not None and sl_sr is not None and tp1_sr > entry and sl_sr < entry:
-            # TP2 = 20% weiter als TP1-Distanz
             tp2 = round(entry + (tp1_sr - entry) * TP2_FACTOR, 6)
             return entry, round(sl_sr,6), round(tp1_sr,6), tp2, None, True
     else:
@@ -218,7 +262,7 @@ def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFram
             tp2 = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)
             return entry, round(sl_sr,6), round(tp1_sr,6), tp2, None, True
 
-    # Fallback: ATR-Levels wie bisher
+    # Fallback: ATR
     if direction == "LONG":
         sl  = round(entry - ATR_SL  * atrv, 6)
         tp1 = round(entry + TP1_ATR * atrv, 6)
@@ -232,7 +276,8 @@ def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFram
     return entry, sl, tp1, tp2, tp3, False
 
 # ====== Checkliste (streng) ======
-def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, dn_all: bool) -> Tuple[bool, List[str], List[str]]:
+def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, dn_all: bool,
+                            safe_ok_long: bool, safe_ok_short: bool) -> Tuple[bool, List[str], List[str]]:
     ok, warn = [], []
 
     atr_pct = (trig["atr"] / max(trig["price"], 1e-9)) * 100.0
@@ -253,6 +298,15 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
     else:              return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
 
+    # Safe-Entry (Fib-Zone) als hartes Kriterium
+    if SAFE_ENTRY_REQUIRED:
+        safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
+        if safe_ok:
+            ok.append("Safe-Entry: Fib 0.5–0.618 (5m)")
+        else:
+            return (False, ok, ["Kein Safe-Entry (Fib 0.5–0.618)"])
+
+    # RSI nur Hinweis
     if direction=="LONG":
         if trig["rsi"] > 67: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
         else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
@@ -292,8 +346,9 @@ async def send_signal(symbol: str, tf: str, direction: str,
 
 async def send_mode_banner():
     text = (
-        "🛡 *Scanner gestartet – MODUS: STRENG + S/R-Ziele*\n"
+        "🛡 *Scanner gestartet – MODUS: STRENG + Safe-Entry + S/R-Ziele*\n"
         f"• Scan alle 15 Minuten\n"
+        "• Safe-Entry: Pullback in Fib 0.5–0.618 (5m) — Pflicht\n"
         "• HTF strikt aligned (15m/1h/4h)\n"
         f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20\n"
         f"• ATR%-Schwelle aktiv (≥ {MIN_ATR_PCT:.2f}%)\n"
@@ -315,6 +370,14 @@ async def scan_once():
             df5  = fetch_df(sym, TF_TRIGGER)
             trig = analyze_trigger(df5)
 
+            # Safe-Entry Check (Fib-Zone auf 5m)
+            imp = last_impulse(df5)
+            safe_ok_long, safe_ok_short = False, False
+            if imp is not None:
+                long_ok, _zoneL = fib_zone_ok(trig["price"], imp, "LONG")
+                short_ok, _zoneS = fib_zone_ok(trig["price"], imp, "SHORT")
+                safe_ok_long, safe_ok_short = long_ok, short_ok
+
             # Trendfilter
             up_all, dn_all = True, True
             for tf in TF_FILTERS:
@@ -327,7 +390,9 @@ async def scan_once():
             # Richtung(en) prüfen
             passes = []
             for direction in ("LONG","SHORT"):
-                passed, ok_tags, warn_tags = build_checklist_for_dir(direction, trig, up_all, dn_all)
+                passed, ok_tags, warn_tags = build_checklist_for_dir(
+                    direction, trig, up_all, dn_all, safe_ok_long, safe_ok_short
+                )
                 if passed:
                     prob = prob_score(direction=="LONG", direction=="SHORT", trig["vol_ok"], up_all or dn_all,
                                       trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"])
@@ -346,7 +411,7 @@ async def scan_once():
                         "direction": direction, "prob": prob, "throttled": throttled,
                         "ok": ok_tags, "warn": warn_tags,
                         "price": trig["price"], "atr": trig["atr"],
-                        "sr_used": used_sr
+                        "sr_used": used_sr, "safe_entry": (safe_ok_long if direction=="LONG" else safe_ok_short)
                     }
                     if not throttled:
                         await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, maybe_tp3, prob, ok_tags, warn_tags, used_sr)
@@ -377,7 +442,7 @@ async def _startup():
 async def root():
     return {
         "ok": True,
-        "mode": "streng_sr",
+        "mode": "streng_sr_safe",
         "symbols": SYMBOLS,
         "trigger_tf": TF_TRIGGER,
         "filters": TF_FILTERS,
@@ -393,10 +458,10 @@ async def manual_scan():
 
 @app.get("/status")
 async def status():
-    return {"ok": True, "mode": "streng_sr", "report": last_scan_report}
+    return {"ok": True, "mode": "streng_sr_safe", "report": last_scan_report}
 
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + S/R*, Scan: alle 15 Min."
+    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + Safe-Entry (Fib) + S/R*, Scan: alle 15 Min."
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
-    return {"ok": True, "test": True, "mode": "streng_sr"}
+    return {"ok": True, "test": True, "mode": "streng_sr_safe"}
