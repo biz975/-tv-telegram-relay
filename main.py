@@ -1,4 +1,4 @@
-# Autonomous MEXC scanner → Telegram (FastAPI + Scheduler) + GELockerte Checkliste + Status-Report
+# Autonomous MEXC scanner → Telegram (FastAPI + Scheduler) + FINAL Checkliste + Status-Report
 import os, asyncio, time, math
 from datetime import datetime, timezone
 from typing import List, Dict, Tuple, Any
@@ -14,7 +14,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 TG_TOKEN   = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
-# 10 Coins (Spot). Für Perps: z.B. "BTC/USDT:USDT" bei manchen Börsen; MEXC ccxt-Spot bleibt "BTC/USDT".
+# 10 Coins (Spot)
 SYMBOLS = ["BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
            "TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT"]
 
@@ -31,19 +31,19 @@ TP1_ATR = 1.0
 TP2_ATR = 1.8
 TP3_ATR = 2.6
 
-# ====== GELockerte Checklisten-Settings ======
-MIN_ATR_PCT        = 0.12      # min ATR% vom Preis (gelockert)
-VOL_SPIKE_FACTOR   = 1.10      # Volumen > 1.10x MA20
-REQUIRE_VOL_SPIKE  = False     # Volumenspike ist kein KO-Kriterium
-PROB_MIN           = 50        # mind. 50% für Versand
-COOLDOWN_S         = 300       # Anti-Spam pro Symbol/Richtung
+# ====== FINAL Checkliste (streng) ======
+MIN_ATR_PCT        = 0.20      # min. ATR% vom Preis (strenger)
+VOL_SPIKE_FACTOR   = 1.30      # Volumen > 1.30 × MA20
+REQUIRE_VOL_SPIKE  = True      # Vol-Spike ist Pflicht (KO, kein Warn-only)
+PROB_MIN           = 60        # mind. 60% für Versand (wie Final)
+COOLDOWN_S         = 300       # Anti-Spam pro Symbol/Richtung (5m)
 
 # ====== Init ======
 if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
 bot = Bot(token=TG_TOKEN)
-app = FastAPI(title="MEXC Auto Scanner → Telegram (mit Checkliste)")
+app = FastAPI(title="MEXC Auto Scanner → Telegram (FINAL Checkliste)")
 
 # CCXT Exchange
 ex = ccxt.mexc({"enableRateLimit": True})
@@ -68,7 +68,7 @@ def vol_sma(v, length: int = 20):
     return ta.sma(v, length)
 
 def bullish_engulf(o, h, l, c) -> bool:
-    # bull candle, und umschließt den vorherigen Körper
+    # bull candle umschließt vorherigen Körper
     return (c.iloc[-1] > o.iloc[-1]) and (o.iloc[-1] <= l.iloc[-2]) and (c.iloc[-1] >= h.iloc[-2])
 
 def bearish_engulf(o, h, l, c) -> bool:
@@ -164,45 +164,50 @@ def analyze_trigger(df: pd.DataFrame) -> Dict[str, any]:
         "rsi": float(df.rsi.iloc[-1]),
     }
 
-# ====== GELockerte Checkliste ======
+# ====== FINAL Checkliste (streng) ======
 def build_checklist_for_dir(direction: str, trig: Dict[str, any], up_all: bool, dn_all: bool) -> Tuple[bool, List[str], List[str]]:
     """
     returns: (passed, ok_tags, warn_tags)
-    - Hard-Kriterien (KO wenn False): ATR%, HTF-Align, Bias (Engulf ODER EMA-Stack), EMA200 in Richtung
-    - Soft (Warnung): Volumenspike, RSI-Puffer
+    KO-Kriterien: ATR%, HTF-Align, Bias (Engulf ODER EMA-Stack), EMA200 in Richtung, Volumenspike.
+    Soft: RSI-Puffer (nur Warnung).
     """
     ok, warn = [], []
 
     # ATR in % vom Preis
     atr_pct = (trig["atr"] / max(trig["price"], 1e-9)) * 100.0
-    atr_ok = atr_pct >= MIN_ATR_PCT
-    if atr_ok: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
-    else:      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
+    if atr_pct >= MIN_ATR_PCT:
+        ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
+    else:
+        return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
     # HTF-Alignment
     htf_ok = (up_all if direction=="LONG" else dn_all)
-    if htf_ok: ok.append("HTF align (15m/1h/4h)")
-    else:      return (False, ok, ["HTF nicht aligned"])
+    if htf_ok:
+        ok.append("HTF align (15m/1h/4h)")
+    else:
+        return (False, ok, ["HTF nicht aligned"])
 
     # Bias (Engulf oder EMA-Stack)
     bias_ok = (trig["bull"] or trig["long_fast"]) if direction=="LONG" else (trig["bear"] or trig["short_fast"])
-    if bias_ok: ok.append("Engulf/EMA-Stack")
-    else:       return (False, ok, ["Kein Engulf/EMA-Stack"])
+    if bias_ok:
+        ok.append("Engulf/EMA-Stack")
+    else:
+        return (False, ok, ["Kein Engulf/EMA-Stack"])
 
     # EMA200 in Richtung
     ema200_ok = trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"]
-    if ema200_ok: ok.append("EMA200 ok")
-    else:         return (False, ok, ["EMA200 gegen Setup"])
+    if ema200_ok:
+        ok.append("EMA200 ok")
+    else:
+        return (False, ok, ["EMA200 gegen Setup"])
 
-    # Soft: Volumenspike (nur Warnung wenn REQUIRED=False)
+    # Volumenspike (Final = Pflicht)
     if trig["vol_ok"]:
         ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA")
-    elif REQUIRE_VOL_SPIKE:
-        return (False, ok, [f"kein Vol-Spike ({VOL_SPIKE_FACTOR:.2f}×)"])
     else:
-        warn.append(f"kein Vol-Spike ({VOL_SPIKE_FACTOR:.2f}×)")
+        return (False, ok, [f"kein Vol-Spike ({VOL_SPIKE_FACTOR:.2f}×)"])
 
-    # Soft: RSI-Puffer
+    # RSI-Puffer (nur Hinweis)
     if direction=="LONG":
         if trig["rsi"] > 67: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
         else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
@@ -220,7 +225,6 @@ async def scan_once():
     last_scan_report = {"ts": round_ts, "symbols": {}}
 
     for sym in SYMBOLS:
-        sym_notes = []
         try:
             # Trigger-TF
             df5  = fetch_df(sym, TF_TRIGGER)
@@ -235,18 +239,19 @@ async def scan_once():
                 dn_all &= dn
                 time.sleep(ex.rateLimit/1000)
 
-            # Beide Richtungen kalkulieren → die, die besteht, gewinnt
+            # Beide Richtungen durch Final-Checkliste
             passes = []
             for direction in ("LONG","SHORT"):
                 passed, ok_tags, warn_tags = build_checklist_for_dir(direction, trig, up_all, dn_all)
                 if passed:
-                    prob = prob_score(direction=="LONG", direction=="SHORT", trig["vol_ok"], up_all or dn_all,
+                    prob = prob_score(direction=="LONG", direction=="SHORT",
+                                      True,  # vol_ok garantiert True (Pflicht)
+                                      up_all or dn_all,
                                       trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"])
                     passes.append( (direction, prob, ok_tags, warn_tags) )
 
             # Entscheidung
             if passes:
-                # nimm die Richtung mit höherer prob
                 direction, prob, ok_tags, warn_tags = sorted(passes, key=lambda x: x[1], reverse=True)[0]
                 if prob >= PROB_MIN:
                     entry, sl, tp1, tp2, tp3 = make_levels(direction, trig["price"], trig["atr"])
@@ -262,7 +267,7 @@ async def scan_once():
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"prob {prob}% < {PROB_MIN}%"}
             else:
-                last_scan_report["symbols"][sym] = {"skip": "Checkliste nicht bestanden"}
+                last_scan_report["symbols"][sym] = {"skip": "Final-Checkliste nicht bestanden"}
 
         except Exception as e:
             last_scan_report["symbols"][sym] = {"error": str(e)}
@@ -292,7 +297,7 @@ async def manual_scan():
     await scan_once()
     return {"ok": True, "ran": True, "ts": last_scan_report.get("ts")}
 
-# Letzten Analyse-Report ansehen (gelockerte Checkliste je Symbol)
+# Letzten Analyse-Report ansehen (FINAL Checkliste je Symbol)
 @app.get("/status")
 async def status():
     return {"ok": True, "report": last_scan_report}
@@ -300,6 +305,6 @@ async def status():
 # Schnelltest: Telegram-Nachricht (ohne Markt-Call)
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — MEXC Scanner mit Checkliste aktiv."
+    text = "✅ Test: Bot & Telegram OK — MEXC Scanner mit FINAL Checkliste aktiv."
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True}
