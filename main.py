@@ -332,7 +332,7 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     ok, warn = [], []
 
     atr_pct = (trig["atr"] / max(trig["price"], 1e-9)) * 100.0
-    if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atm_pct:.2f}%)")  # <-- Tippfehler korrigiert unten
+    if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
     else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
     if (up_all if direction=="LONG" else dn_all): ok.append("HTF align (15m/1h/4h)")
