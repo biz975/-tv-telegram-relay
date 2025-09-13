@@ -77,6 +77,9 @@ COOLDOWN_S         = 300        # Anti-Spam pro Symbol/Richtung
 # === NEW: 24h-Mute pro Coin nach gesendetem Signal ===
 DAILY_SILENCE_S    = 24 * 60 * 60  # 24 Stunden
 
+# ====== Anzeige-Settings ======
+COMPACT_SIGNALS = True   # True = nur Kerninfos (Richtung, Entry, TP1–TP3, SL, Prob%)
+
 # ====== Init ======
 if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
@@ -329,7 +332,7 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     ok, warn = [], []
 
     atr_pct = (trig["atr"] / max(trig["price"], 1e-9)) * 100.0
-    if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
+    if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atm_pct:.2f}%)")  # <-- Tippfehler korrigiert unten
     else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
     if (up_all if direction=="LONG" else dn_all): ok.append("HTF align (15m/1h/4h)")
@@ -371,25 +374,42 @@ def need_throttle(key: str, now: float, cool_s: int = COOLDOWN_S) -> bool:
     last_signal[key] = now
     return False
 
+# ====== KOMPAKTE / DETAILLIERTE SIGNAL-NACHRICHT ======
 async def send_signal(symbol: str, tf: str, direction: str,
                       entry: float, sl: float, tp1: float, tp2: float, tp3: float | None,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
-    checks_line = ""
-    if checklist_ok:   checks_line += f"✅ {', '.join(checklist_ok)}\n"
-    if checklist_warn: checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
-    sr_note = "S/R 15m/1h/4h" if used_sr else "ATR-Fallback"
 
-    text = (
-        f"🛡 *STRIKT* — Signal {symbol} {tf}\n"
-        f"➡️ *{direction}*  ({sr_note})\n"
-        f"🎯 Entry: `{entry}`\n"
-        f"🛡 SL: `{sl}`\n"
-        f"🏁 TP1: `{tp1}`\n"
-        f"🏁 TP2: `{tp2}`\n"
-        + (f"🏁 TP3: `{tp3}`\n" if tp3 is not None else "")
-        + f"📈 Prob.: *{prob}%*\n"
-        f"{checks_line}".strip()
-    )
+    if COMPACT_SIGNALS:
+        # Kompakt: nur Kerninfos
+        lines = [
+            f"🛡 *STRIKT* — {symbol} {tf}",
+            f"➡️ *{direction}*",
+            f"🎯 Entry: `{entry}`",
+            f"🏁 TP1: `{tp1}`",
+            f"🏁 TP2: `{tp2}`",
+            *( [f"🏁 TP3: `{tp3}`"] if tp3 is not None else [] ),
+            f"🛡 SL: `{sl}`",
+            f"📈 Prob.: *{prob}%*",
+        ]
+        text = "\n".join(lines)
+    else:
+        # Detailmodus wie zuvor
+        checks_line = ""
+        if checklist_ok:   checks_line += f"✅ {', '.join(checklist_ok)}\n"
+        if checklist_warn: checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
+        sr_note = "S/R 15m/1h/4h" if used_sr else "ATR-Fallback"
+        text = (
+            f"🛡 *STRIKT* — Signal {symbol} {tf}\n"
+            f"➡️ *{direction}*  ({sr_note})\n"
+            f"🎯 Entry: `{entry}`\n"
+            f"🛡 SL: `{sl}`\n"
+            f"🏁 TP1: `{tp1}`\n"
+            f"🏁 TP2: `{tp2}`\n"
+            + (f"🏁 TP3: `{tp3}`\n" if tp3 is not None else "")
+            + f"📈 Prob.: *{prob}%*\n"
+            f"{checks_line}".strip()
+        )
+
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
 async def send_mode_banner():
