@@ -1,6 +1,5 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
-
-# STRIKT + Safe-Entry (Fib 0.5–0.618 Pullback, 5m) + S/R-Ziele (15m) + Scan alle 15 min
+# STRIKT + Safe-Entry (Fib 0.5–0.618 Pullback, 5m) + S/R-Ziele (15m/1h/4h) + Scan alle 15 min
 
 import os, asyncio, time, math
 from datetime import datetime, timezone
@@ -14,7 +13,6 @@ from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ====== Config ======
-
 TG_TOKEN   = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
@@ -53,13 +51,15 @@ PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung (5m)
 PIVOT_RIGHT_TRIG = 3
 FIB_TOL_PCT = 0.10 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
-# ====== S/R (15m) Einstellungen ======
-SR_TF = "15m"
-PIVOT_LEFT = 3                      # Pivot-Breite für Swings (15m)
+# ====== S/R (Timeframes für TPs & SL) ======
+SR_TF_TP1 = "15m"                  # TP1 aus 15m
+SR_TF_TP2 = "1h"                   # TP2 aus 1h (wenn möglich)
+SR_TF_TP3 = "4h"                   # TP3 aus 4h (optional)
+PIVOT_LEFT = 3                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 3
-CLUSTER_PCT = 0.15 / 100.0          # Cluster-Toleranz (±0.15 %)
-MIN_STRENGTH = 3                    # min. Anzahl an Swings für „starkes“ Level
-TP2_FACTOR = 1.20                   # TP2 = Entry + 1.2 * (TP1-Entry) (bzw. Short symmetrisch)
+CLUSTER_PCT = 0.15 / 100.0         # Cluster-Toleranz (±0.15 %)
+MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
+TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.5
@@ -74,6 +74,9 @@ REQUIRE_VOL_SPIKE  = True       # Volumenspike = KO-Kriterium
 PROB_MIN           = 60         # mind. 60% Wahrscheinlichkeit
 COOLDOWN_S         = 300        # Anti-Spam pro Symbol/Richtung
 
+# === NEW: 24h-Mute pro Coin nach gesendetem Signal ===
+DAILY_SILENCE_S    = 24 * 60 * 60  # 24 Stunden
+
 # ====== Init ======
 if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
@@ -85,6 +88,8 @@ ex = ccxt.mexc({"enableRateLimit": True})
 
 last_signal: Dict[str, float] = {}
 last_scan_report: Dict[str, Any] = {"ts": None, "symbols": {}}
+# NEW: Merker für 24h-Sperre pro Coin
+daily_mute: Dict[str, float] = {}  # key = "SYM" -> timestamp des letzten gesendeten Signals
 
 # ====== TA Helpers ======
 def ema(series: pd.Series, length: int):
@@ -117,6 +122,17 @@ def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame
     ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
     return df
+
+# NEW: Helper für 24h-Mute
+def is_daily_muted(symbol: str, now_ts: float) -> Tuple[bool, float]:
+    """
+    True + Restsekunden, wenn 24h-Sperre aktiv.
+    """
+    last_ts = daily_mute.get(symbol, 0.0)
+    elapsed = now_ts - last_ts
+    if elapsed < DAILY_SILENCE_S:
+        return True, DAILY_SILENCE_S - elapsed
+    return False, 0.0
 
 # ====== Trigger & Trend ======
 def compute_trend_ok(df: pd.DataFrame) -> Tuple[bool,bool,bool]:
@@ -177,7 +193,6 @@ def last_impulse(df: pd.DataFrame) -> Tuple[Tuple[int,float], Tuple[int,float]] 
         return None
     last_hi_i = hi_idx[-1]
     last_lo_i = lo_idx[-1]
-    # Versuche, ein Paar zu bauen, das zeitlich korrekt ist (low vor high oder high vor low)
     if last_lo_i < last_hi_i:
         return ((last_lo_i, lows[last_lo_i]), (last_hi_i, highs[last_hi_i]))
     elif last_hi_i < last_lo_i:
@@ -190,7 +205,7 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
     if hi_i == lo_i:
         return (False, (0.0, 0.0))
     if hi_i > lo_i:
-        # Aufwärts-Impuls (long-kandidat): low -> high
+        # Aufwärts-Impuls (long): low -> high
         fib50  = lo_v + 0.5  * (hi_v - lo_v)
         fib618 = lo_v + 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib50, fib618])
@@ -199,7 +214,7 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         ok = (direction == "LONG") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
     else:
-        # Abwärts-Impuls (short-kandidat): high -> low
+        # Abwärts-Impuls (short): high -> low
         fib50  = hi_v - 0.5  * (hi_v - lo_v)
         fib618 = hi_v - 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib618, fib50])  # bei Shorts liegt 0.618 unter 0.5
@@ -208,8 +223,9 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         ok = (direction == "SHORT") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
 
-# ====== S/R-Ermittlung (15m) ======
+# ====== S/R-Tools (für 15m/1h/4h) ======
 def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
+    """Gibt (res_levels, sup_levels) als Listen von (level_price, strength) zurück."""
     highs = df["high"].values
     lows  = df["low"].values
     n = len(df)
@@ -262,21 +278,37 @@ def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: s
         return None
     return min(candidates) if direction == "LONG" else max(candidates)
 
-def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,float,float,bool]:
-    res_lvls, sup_lvls = find_pivots_levels(df_sr)
+def get_sr_levels(symbol: str, timeframe: str) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
+    df = fetch_df(symbol, timeframe, limit=LOOKBACK)
+    return find_pivots_levels(df)
+
+def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -> Tuple[float,float,float,float,float,bool]:
+    """
+    TP1 aus 15m, TP2 aus 1h, TP3 aus 4h (optional). SL aus 15m Gegenseite.
+    Fallback: ATR-Levels, wenn TP1+SL nicht sauber vorhanden.
+    """
+    res_15, sup_15 = get_sr_levels(symbol, SR_TF_TP1)
+    res_1h, sup_1h = get_sr_levels(symbol, SR_TF_TP2)
+    res_4h, sup_4h = get_sr_levels(symbol, SR_TF_TP3)
 
     if direction == "LONG":
-        tp1_sr = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
-        sl_sr  = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
-        if tp1_sr is not None and sl_sr is not None and tp1_sr > entry and sl_sr < entry:
-            tp2 = round(entry + (tp1_sr - entry) * TP2_FACTOR, 6)
-            return entry, round(sl_sr,6), round(tp1_sr,6), tp2, None, True
+        tp1 = nearest_level(res_15, entry, "LONG", MIN_STRENGTH)
+        sl  = nearest_level(sup_15, entry, "SHORT", MIN_STRENGTH)
+        if tp1 is not None and sl is not None and tp1 > entry and sl < entry:
+            tp2 = nearest_level(res_1h, tp1, "LONG", MIN_STRENGTH)
+            if tp2 is None:
+                tp2 = round(entry + (tp1 - entry) * TP2_FACTOR, 6)
+            tp3 = nearest_level(res_4h, tp2, "LONG", MIN_STRENGTH)
+            return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 is not None else None), True
     else:
-        tp1_sr = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
-        sl_sr  = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
-        if tp1_sr is not None and sl_sr is not None and tp1_sr < entry and sl_sr > entry:
-            tp2 = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)
-            return entry, round(sl_sr,6), round(tp1_sr,6), tp2, None, True
+        tp1 = nearest_level(sup_15, entry, "SHORT", MIN_STRENGTH)
+        sl  = nearest_level(res_15, entry, "LONG", MIN_STRENGTH)
+        if tp1 is not None and sl is not None and tp1 < entry and sl > entry:
+            tp2 = nearest_level(sup_1h, tp1, "SHORT", MIN_STRENGTH)
+            if tp2 is None:
+                tp2 = round(entry - (entry - tp1) * TP2_FACTOR, 6)
+            tp3 = nearest_level(sup_4h, tp2, "SHORT", MIN_STRENGTH)
+            return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 is not None else None), True
 
     # Fallback: ATR
     if direction == "LONG":
@@ -345,7 +377,7 @@ async def send_signal(symbol: str, tf: str, direction: str,
     checks_line = ""
     if checklist_ok:   checks_line += f"✅ {', '.join(checklist_ok)}\n"
     if checklist_warn: checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
-    sr_note = "S/R 15m" if used_sr else "ATR-Fallback"
+    sr_note = "S/R 15m/1h/4h" if used_sr else "ATR-Fallback"
 
     text = (
         f"🛡 *STRIKT* — Signal {symbol} {tf}\n"
@@ -369,7 +401,7 @@ async def send_mode_banner():
         f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20\n"
         f"• ATR%-Schwelle aktiv (≥ {MIN_ATR_PCT:.2f}%)\n"
         f"• Wahrscheinlichkeit ≥ {PROB_MIN}%\n"
-        "• TP/SL über 15m Support/Resistance (TP2 = +20% Distanz). Fallback: ATR\n"
+        "• TP1=15m, TP2=1h, TP3=4h (sofern vorhanden). Fallback: ATR\n"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
@@ -382,6 +414,15 @@ async def scan_once():
 
     for sym in SYMBOLS:
         try:
+            # NEW: 24h-Mute check pro Coin
+            muted, rest = is_daily_muted(sym, now)
+            if muted:
+                hrs = int(rest // 3600)
+                mins = int((rest % 3600) // 60)
+                last_scan_report["symbols"][sym] = {"skip": f"24h-Mute aktiv – noch {hrs}h {mins}m"}
+                time.sleep(ex.rateLimit/1000)
+                continue
+
             # Trigger-TF
             df5  = fetch_df(sym, TF_TRIGGER)
             trig = analyze_trigger(df5)
@@ -417,9 +458,8 @@ async def scan_once():
             if passes:
                 direction, prob, ok_tags, warn_tags = sorted(passes, key=lambda x: x[1], reverse=True)[0]
                 if prob >= PROB_MIN:
-                    # 15m S/R für Ziele laden
-                    df_sr = fetch_df(sym, SR_TF, limit=LOOKBACK)
-                    entry, sl, tp1, tp2, maybe_tp3, used_sr = make_levels_sr(direction, trig["price"], trig["atr"], df_sr)
+                    # S/R-Ziele multi-TF (15m/1h/4h)
+                    entry, sl, tp1, tp2, maybe_tp3, used_sr = make_levels_sr_mtf(sym, direction, trig["price"], trig["atr"])
                     key = f"{sym}:{direction}"
                     throttled = need_throttle(key, now)
 
@@ -431,6 +471,8 @@ async def scan_once():
                     }
                     if not throttled:
                         await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, maybe_tp3, prob, ok_tags, warn_tags, used_sr)
+                        # NEW: nach Send Coin für 24h stummschalten
+                        daily_mute[sym] = now
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"prob {prob}% < {PROB_MIN}%"}
             else:
@@ -463,7 +505,7 @@ async def root():
         "trigger_tf": TF_TRIGGER,
         "filters": TF_FILTERS,
         "scan_interval_s": SCAN_INTERVAL_S,
-        "sr_tf": SR_TF,
+        "sr_tps": {"tp1": SR_TF_TP1, "tp2": SR_TF_TP2, "tp3": SR_TF_TP3},
         "info": "Background scanner active. TradingView not required."
     }
 
@@ -478,6 +520,6 @@ async def status():
 
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + Safe-Entry (Fib) + S/R*, Scan: alle 15 Min."
+    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + Safe-Entry (Fib) + S/R (15m/1h/4h)*, Scan: alle 15 Min."
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True, "mode": "streng_sr_safe"}
