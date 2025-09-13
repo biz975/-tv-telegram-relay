@@ -1,4 +1,5 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
+
 # STRIKT + Safe-Entry (Fib 0.5–0.618 Pullback, 5m) + S/R-Ziele (15m) + Scan alle 15 min
 
 import os, asyncio, time, math
@@ -13,16 +14,31 @@ from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ====== Config ======
+
 TG_TOKEN   = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
-# 25 liquide Spot-Paare (MEXC-Notation "XXX/USDT")
+# 70 liquide Spot-Paare (MEXC-Notation "XXX/USDT")
 SYMBOLS = [
+    # bestehende 25
     "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
     "TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT",
     "TRX/USDT","DOT/USDT","MATIC/USDT","SHIB/USDT","PEPE/USDT",
     "LTC/USDT","BCH/USDT","ATOM/USDT","NEAR/USDT","APT/USDT",
     "ARB/USDT","OP/USDT","SUI/USDT","INJ/USDT","FIL/USDT",
+
+    # +25 neue
+    "AAVE/USDT","APE/USDT","ARKM/USDT","BLUR/USDT","CHZ/USDT",
+    "COMP/USDT","CRV/USDT","DYDX/USDT","EGLD/USDT","FET/USDT",
+    "GALA/USDT","GMX/USDT","GRT/USDT","ICP/USDT","IMX/USDT",
+    "LDO/USDT","MKR/USDT","PYTH/USDT","RNDR/USDT","RUNE/USDT",
+    "SEI/USDT","STX/USDT","TIA/USDT","UNI/USDT","ONDO/USDT",
+
+    # +20 weitere (insgesamt 70)
+    "ALGO/USDT","ANKR/USDT","BAT/USDT","COTI/USDT","DASH/USDT",
+    "ENJ/USDT","FLOW/USDT","FTM/USDT","HNT/USDT","JTO/USDT",
+    "KAVA/USDT","KAS/USDT","KLAY/USDT","MANA/USDT","MINA/USDT",
+    "NTRN/USDT","OCEAN/USDT","QNT/USDT","ROSE/USDT","ZIL/USDT",
 ]
 
 # ====== Analyse & Scan ======
