@@ -1,5 +1,5 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
-# STRIKT + Safe-Entry (Fib 0.5–0.618 Pullback, 5m) + S/R-Ziele (15m/1h/4h) + Scan alle 15 min
+# STRIKT + Safe-Entry (Fib 0.5–0.618 Pullback, 15m) + S/R-Ziele (15m/1h/4h) + Scan alle 15 min
 
 import os, asyncio, time, math
 from datetime import datetime, timezone
@@ -45,9 +45,10 @@ TF_FILTERS = ["15m","1h","4h"]     # Trendfilter (streng)
 LOOKBACK = 300
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
-# ====== Safe-Entry (Pullback in Fib-Zone auf 5m) ======
+# ====== Safe-Entry (Pullback in Fib-Zone auf 15m) ======
 SAFE_ENTRY_REQUIRED = True         # Safe-Entry ist KO-Kriterium
-PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung (5m)
+SAFE_ENTRY_TF = "15m"              # <— NEU: Fib-/Impulse-Check auf 15m
+PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
 FIB_TOL_PCT = 0.10 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
@@ -64,8 +65,8 @@ TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.5
 TP1_ATR = 1.0
-TP2_ATR = 1.8
-TP3_ATR = 2.6
+TP2_ATR = 2.2   # <— WEITER AUSEINANDER (vorher 1.8)
+TP3_ATR = 3.4   # <— WEITER AUSEINANDER (vorher 2.6)
 
 # ====== STRIKTE Checklisten-Settings ======
 MIN_ATR_PCT        = 0.20       # min ATR% vom Preis
@@ -171,7 +172,7 @@ def analyze_trigger(df: pd.DataFrame) -> Dict[str, Any]:
         "rsi": float(df.rsi.iloc[-1]),
     }
 
-# ====== Safe-Entry (letzte Impulsbewegung per Pivots, 5m) ======
+# ====== Safe-Entry (letzte Impulsbewegung per Pivots, SAFE_ENTRY_TF) ======
 def find_pivot_indices(values: List[float], left: int, right: int, is_high: bool) -> List[int]:
     idxs = []
     n = len(values)
@@ -349,13 +350,13 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
     else:              return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
 
-    # Safe-Entry (Fib-Zone) als hartes Kriterium
+    # Safe-Entry (Fib-Zone) als hartes Kriterium (auf SAFE_ENTRY_TF)
     if SAFE_ENTRY_REQUIRED:
         safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
         if safe_ok:
-            ok.append("Safe-Entry: Fib 0.5–0.618 (5m)")
+            ok.append(f"Safe-Entry: Fib 0.5–0.618 ({SAFE_ENTRY_TF})")
         else:
-            return (False, ok, ["Kein Safe-Entry (Fib 0.5–0.618)"])
+            return (False, ok, [f"Kein Safe-Entry (Fib 0.5–0.618, {SAFE_ENTRY_TF})"])
 
     # RSI nur Hinweis
     if direction=="LONG":
@@ -416,12 +417,12 @@ async def send_mode_banner():
     text = (
         "🛡 *Scanner gestartet – MODUS: STRENG + Safe-Entry + S/R-Ziele*\n"
         f"• Scan alle 15 Minuten\n"
-        "• Safe-Entry: Pullback in Fib 0.5–0.618 (5m) — Pflicht\n"
+        f"• Safe-Entry: Pullback in Fib 0.5–0.618 ({SAFE_ENTRY_TF}) — Pflicht\n"
         "• HTF strikt aligned (15m/1h/4h)\n"
         f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20\n"
         f"• ATR%-Schwelle aktiv (≥ {MIN_ATR_PCT:.2f}%)\n"
         f"• Wahrscheinlichkeit ≥ {PROB_MIN}%\n"
-        "• TP1=15m, TP2=1h, TP3=4h (sofern vorhanden). Fallback: ATR\n"
+        "• TP1=15m, TP2=1h, TP3=4h (sofern vorhanden). Fallback: ATR (weiter entfernte TP2/TP3)\n"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
@@ -443,12 +444,13 @@ async def scan_once():
                 time.sleep(ex.rateLimit/1000)
                 continue
 
-            # Trigger-TF
+            # Trigger-TF (5m) für Signal/Vol/RSI/EMAs
             df5  = fetch_df(sym, TF_TRIGGER)
             trig = analyze_trigger(df5)
 
-            # Safe-Entry Check (Fib-Zone auf 5m)
-            imp = last_impulse(df5)
+            # Safe-Entry Check (Fib-Zone jetzt auf SAFE_ENTRY_TF = 15m)
+            df_safe = fetch_df(sym, SAFE_ENTRY_TF)
+            imp = last_impulse(df_safe)
             safe_ok_long, safe_ok_short = False, False
             if imp is not None:
                 long_ok, _zoneL = fib_zone_ok(trig["price"], imp, "LONG")
@@ -540,6 +542,6 @@ async def status():
 
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + Safe-Entry (Fib) + S/R (15m/1h/4h)*, Scan: alle 15 Min."
+    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + Safe-Entry (Fib 15m) + S/R (15m/1h/4h)*, Scan: alle 15 Min."
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True, "mode": "streng_sr_safe"}
