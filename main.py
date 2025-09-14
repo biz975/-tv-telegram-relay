@@ -40,14 +40,14 @@ SYMBOLS = [
 ]
 
 # ====== Analyse & Scan ======
-TF_TRIGGER = "5m"                  # Signal-TF
+TF_TRIGGER = "5m"                  # Signal-TF (Bias/Vol/RSI/EMAs)
 TF_FILTERS = ["15m","1h","4h"]     # Trendfilter (streng)
 LOOKBACK = 300
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
 # ====== Safe-Entry (Pullback in Fib-Zone auf 15m) ======
 SAFE_ENTRY_REQUIRED = True         # Safe-Entry ist KO-Kriterium
-SAFE_ENTRY_TF = "15m"              # <— NEU: Fib-/Impulse-Check auf 15m
+SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
 FIB_TOL_PCT = 0.10 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
@@ -65,8 +65,8 @@ TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.5
 TP1_ATR = 1.0
-TP2_ATR = 2.2   # <— WEITER AUSEINANDER (vorher 1.8)
-TP3_ATR = 3.4   # <— WEITER AUSEINANDER (vorher 2.6)
+TP2_ATR = 2.2   # weiter auseinander (nur wenn S/R fehlt)
+TP3_ATR = 3.4   # weiter auseinander (nur wenn S/R fehlt)
 
 # ====== STRIKTE Checklisten-Settings ======
 MIN_ATR_PCT        = 0.20       # min ATR% vom Preis
@@ -75,11 +75,11 @@ REQUIRE_VOL_SPIKE  = True       # Volumenspike = KO-Kriterium
 PROB_MIN           = 60         # mind. 60% Wahrscheinlichkeit
 COOLDOWN_S         = 300        # Anti-Spam pro Symbol/Richtung
 
-# === NEW: 24h-Mute pro Coin nach gesendetem Signal ===
-DAILY_SILENCE_S    = 24 * 60 * 60  # 24 Stunden
+# === 24h-Mute pro Coin nach gesendetem Signal ===
+DAILY_SILENCE_S    = 24 * 60 * 60
 
 # ====== Anzeige-Settings ======
-COMPACT_SIGNALS = True   # True = nur Kerninfos (Richtung, Entry, TP1–TP3, SL, Prob%)
+COMPACT_SIGNALS = True   # nur Kerninfos
 
 # ====== Init ======
 if not TG_TOKEN or not TG_CHAT_ID:
@@ -87,13 +87,11 @@ if not TG_TOKEN or not TG_CHAT_ID:
 
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram (STRIKT + Safe-Entry + S/R)")
-
 ex = ccxt.mexc({"enableRateLimit": True})
 
 last_signal: Dict[str, float] = {}
 last_scan_report: Dict[str, Any] = {"ts": None, "symbols": {}}
-# NEW: Merker für 24h-Sperre pro Coin
-daily_mute: Dict[str, float] = {}  # key = "SYM" -> timestamp des letzten gesendeten Signals
+daily_mute: Dict[str, float] = {}  # key="SYM" -> timestamp letztes Signal
 
 # ====== TA Helpers ======
 def ema(series: pd.Series, length: int):
@@ -127,11 +125,8 @@ def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame
     df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
     return df
 
-# NEW: Helper für 24h-Mute
+# ====== Helper 24h-Mute ======
 def is_daily_muted(symbol: str, now_ts: float) -> Tuple[bool, float]:
-    """
-    True + Restsekunden, wenn 24h-Sperre aktiv.
-    """
     last_ts = daily_mute.get(symbol, 0.0)
     elapsed = now_ts - last_ts
     if elapsed < DAILY_SILENCE_S:
@@ -188,7 +183,7 @@ def find_pivot_indices(values: List[float], left: int, right: int, is_high: bool
     return idxs
 
 def last_impulse(df: pd.DataFrame) -> Tuple[Tuple[int,float], Tuple[int,float]] | None:
-    """Gibt ((lo_idx, lo_val),(hi_idx, hi_val)) der letzten aufeinanderfolgenden Low→High oder High→Low Sequenz zurück."""
+    """((lo_idx, lo_val),(hi_idx, hi_val)) der letzten Low→High oder High→Low Sequenz."""
     highs = df["high"].values
     lows  = df["low"].values
     hi_idx = find_pivot_indices(list(highs), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, True)
@@ -209,7 +204,6 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
     if hi_i == lo_i:
         return (False, (0.0, 0.0))
     if hi_i > lo_i:
-        # Aufwärts-Impuls (long): low -> high
         fib50  = lo_v + 0.5  * (hi_v - lo_v)
         fib618 = lo_v + 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib50, fib618])
@@ -218,7 +212,6 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         ok = (direction == "LONG") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
     else:
-        # Abwärts-Impuls (short): high -> low
         fib50  = hi_v - 0.5  * (hi_v - lo_v)
         fib618 = hi_v - 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib618, fib50])  # bei Shorts liegt 0.618 unter 0.5
@@ -229,19 +222,17 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
 
 # ====== S/R-Tools (für 15m/1h/4h) ======
 def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
-    """Gibt (res_levels, sup_levels) als Listen von (level_price, strength) zurück."""
+    """(res_levels, sup_levels) als Listen von (level_price, strength)."""
     highs = df["high"].values
     lows  = df["low"].values
     n = len(df)
 
     swing_highs, swing_lows = [], []
-
     for i in range(PIVOT_LEFT, n - PIVOT_RIGHT):
         left  = highs[i-PIVOT_LEFT:i]
         right = highs[i+1:i+1+PIVOT_RIGHT]
         if all(highs[i] > left) and all(highs[i] > right):
             swing_highs.append(highs[i])
-
         left  = lows[i-PIVOT_LEFT:i]
         right = lows[i+1:i+1+PIVOT_RIGHT]
         if all(lows[i] < left) and all(lows[i] < right):
@@ -258,15 +249,14 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
             if abs(x - center) / center <= tol_pct:
                 cluster.append(x)
             else:
-                clusters.append( (sum(cluster)/len(cluster), len(cluster)) )
+                clusters.append((sum(cluster)/len(cluster), len(cluster)))
                 cluster = [x]
-        clusters.append( (sum(cluster)/len(cluster), len(cluster)) )
+        clusters.append((sum(cluster)/len(cluster), len(cluster)))
         clusters.sort(key=lambda t: (t[1], t[0]), reverse=True)
         return clusters
 
     res_clusters = cluster_levels(swing_highs, CLUSTER_PCT)
     sup_clusters = cluster_levels(swing_lows , CLUSTER_PCT)
-
     return res_clusters, sup_clusters
 
 def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: str, min_strength: int) -> float | None:
@@ -314,7 +304,7 @@ def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -
             tp3 = nearest_level(sup_4h, tp2, "SHORT", MIN_STRENGTH)
             return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 is not None else None), True
 
-    # Fallback: ATR
+    # ===== ATR-Fallback nur wenn oben NICHT möglich =====
     if direction == "LONG":
         sl  = round(entry - ATR_SL  * atrv, 6)
         tp1 = round(entry + TP1_ATR * atrv, 6)
@@ -381,7 +371,6 @@ async def send_signal(symbol: str, tf: str, direction: str,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
 
     if COMPACT_SIGNALS:
-        # Kompakt: nur Kerninfos
         lines = [
             f"🛡 *STRIKT* — {symbol} {tf}",
             f"➡️ *{direction}*",
@@ -394,7 +383,6 @@ async def send_signal(symbol: str, tf: str, direction: str,
         ]
         text = "\n".join(lines)
     else:
-        # Detailmodus wie zuvor
         checks_line = ""
         if checklist_ok:   checks_line += f"✅ {', '.join(checklist_ok)}\n"
         if checklist_warn: checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
@@ -410,7 +398,6 @@ async def send_signal(symbol: str, tf: str, direction: str,
             + f"📈 Prob.: *{prob}%*\n"
             f"{checks_line}".strip()
         )
-
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
 async def send_mode_banner():
@@ -435,11 +422,10 @@ async def scan_once():
 
     for sym in SYMBOLS:
         try:
-            # NEW: 24h-Mute check pro Coin
+            # 24h-Mute pro Coin
             muted, rest = is_daily_muted(sym, now)
             if muted:
-                hrs = int(rest // 3600)
-                mins = int((rest % 3600) // 60)
+                hrs = int(rest // 3600); mins = int((rest % 3600) // 60)
                 last_scan_report["symbols"][sym] = {"skip": f"24h-Mute aktiv – noch {hrs}h {mins}m"}
                 time.sleep(ex.rateLimit/1000)
                 continue
@@ -448,13 +434,15 @@ async def scan_once():
             df5  = fetch_df(sym, TF_TRIGGER)
             trig = analyze_trigger(df5)
 
-            # Safe-Entry Check (Fib-Zone jetzt auf SAFE_ENTRY_TF = 15m)
+            # Safe-Entry (Fib) auf 15m – nur geschlossene Kerze verwenden
             df_safe = fetch_df(sym, SAFE_ENTRY_TF)
-            imp = last_impulse(df_safe)
+            df_safe_closed = df_safe.iloc[:-1] if len(df_safe) > 1 else df_safe
+            imp = last_impulse(df_safe_closed)
             safe_ok_long, safe_ok_short = False, False
-            if imp is not None:
-                long_ok, _zoneL = fib_zone_ok(trig["price"], imp, "LONG")
-                short_ok, _zoneS = fib_zone_ok(trig["price"], imp, "SHORT")
+            if imp is not None and len(df_safe_closed):
+                price_safe = float(df_safe_closed["close"].iloc[-1])
+                long_ok, _ = fib_zone_ok(price_safe, imp, "LONG")
+                short_ok, _ = fib_zone_ok(price_safe, imp, "SHORT")
                 safe_ok_long, safe_ok_short = long_ok, short_ok
 
             # Trendfilter
@@ -473,15 +461,18 @@ async def scan_once():
                     direction, trig, up_all, dn_all, safe_ok_long, safe_ok_short
                 )
                 if passed:
-                    prob = prob_score(direction=="LONG", direction=="SHORT", trig["vol_ok"], up_all or dn_all,
+                    prob = prob_score(direction=="LONG", direction=="SHORT",
+                                      trig["vol_ok"], up_all or dn_all,
                                       trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"])
-                    passes.append( (direction, prob, ok_tags, warn_tags) )
+                    passes.append((direction, prob, ok_tags, warn_tags))
 
             if passes:
                 direction, prob, ok_tags, warn_tags = sorted(passes, key=lambda x: x[1], reverse=True)[0]
                 if prob >= PROB_MIN:
                     # S/R-Ziele multi-TF (15m/1h/4h)
-                    entry, sl, tp1, tp2, maybe_tp3, used_sr = make_levels_sr_mtf(sym, direction, trig["price"], trig["atr"])
+                    entry, sl, tp1, tp2, maybe_tp3, used_sr = make_levels_sr_mtf(
+                        sym, direction, trig["price"], trig["atr"]
+                    )
                     key = f"{sym}:{direction}"
                     throttled = need_throttle(key, now)
 
@@ -492,8 +483,8 @@ async def scan_once():
                         "sr_used": used_sr, "safe_entry": (safe_ok_long if direction=="LONG" else safe_ok_short)
                     }
                     if not throttled:
-                        await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, maybe_tp3, prob, ok_tags, warn_tags, used_sr)
-                        # NEW: nach Send Coin für 24h stummschalten
+                        await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, maybe_tp3,
+                                          prob, ok_tags, warn_tags, used_sr)
                         daily_mute[sym] = now
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"prob {prob}% < {PROB_MIN}%"}
