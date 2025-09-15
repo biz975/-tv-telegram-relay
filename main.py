@@ -1,5 +1,6 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
 # STRIKT + Safe-Entry (Fib 0.5–0.618 Pullback, 15m) + S/R-Ziele (15m/1h/4h) + Scan alle 15 min
+# + Neu: Safe-Entry NUR mit 15m Volumen-Bestätigung (Entry-Volumenfilter)
 
 import os, asyncio, time, math
 from datetime import datetime, timezone
@@ -52,6 +53,10 @@ PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
 FIB_TOL_PCT = 0.10 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
+# >>> NEU: Volumen-Bestätigung direkt am Safe-Entry (15m)
+ENTRY_VOL_FACTOR = 1.15            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
+REQUIRE_ENTRY_VOL = True           # wenn True, wird Safe-Entry nur mit Volumen bestätigt
+
 # ====== S/R (Timeframes für TPs & SL) ======
 SR_TF_TP1 = "15m"                  # TP1 aus 15m
 SR_TF_TP2 = "1h"                   # TP2 aus 1h (wenn möglich)
@@ -70,7 +75,7 @@ TP3_ATR = 3.4   # weiter auseinander (nur wenn S/R fehlt)
 
 # ====== STRIKTE Checklisten-Settings ======
 MIN_ATR_PCT        = 0.20       # min ATR% vom Preis
-VOL_SPIKE_FACTOR   = 1.30       # Volumen > 1.30× MA20 (Pflicht)
+VOL_SPIKE_FACTOR   = 1.30       # Volumen > 1.30× MA20 (Pflicht) auf TF_TRIGGER
 REQUIRE_VOL_SPIKE  = True       # Volumenspike = KO-Kriterium
 PROB_MIN           = 60         # mind. 60% Wahrscheinlichkeit
 COOLDOWN_S         = 300        # Anti-Spam pro Symbol/Richtung
@@ -110,7 +115,7 @@ def bullish_engulf(o, h, l, c) -> bool:
     return (c.iloc[-1] > o.iloc[-1]) and (o.iloc[-1] <= l.iloc[-2]) and (c.iloc[-1] >= h.iloc[-2])
 
 def bearish_engulf(o, h, l, c) -> bool:
-    return (c.iloc[-1] < o.iloc[-1]) and (o.iloc[-1] >= h.iloc[-2]) and (c.iloc[-1] <= l.iloc[-2])
+    return (c.iloc[-1] < o.iloc[-1]) and (o.iloc[-1] >= l.iloc[-2]) and (c.iloc[-1] <= l.iloc[-2])
 
 def prob_score(long_ok: bool, short_ok: bool, vol_ok: bool, trend_ok: bool, ema200_align: bool) -> int:
     base = 70 if (long_ok or short_ok) else 0
@@ -340,13 +345,13 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
     else:              return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
 
-    # Safe-Entry (Fib-Zone) als hartes Kriterium (auf SAFE_ENTRY_TF)
+    # Safe-Entry (Fib-Zone) inkl. Volumenbestätigung (auf SAFE_ENTRY_TF)
     if SAFE_ENTRY_REQUIRED:
         safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
         if safe_ok:
-            ok.append(f"Safe-Entry: Fib 0.5–0.618 ({SAFE_ENTRY_TF})")
+            ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
         else:
-            return (False, ok, [f"Kein Safe-Entry (Fib 0.5–0.618, {SAFE_ENTRY_TF})"])
+            return (False, ok, [f"Kein Safe-Entry mit Vol-Bestätigung ({SAFE_ENTRY_TF})"])
 
     # RSI nur Hinweis
     if direction=="LONG":
@@ -405,8 +410,9 @@ async def send_mode_banner():
         "🛡 *Scanner gestartet – MODUS: STRENG + Safe-Entry + S/R-Ziele*\n"
         f"• Scan alle 15 Minuten\n"
         f"• Safe-Entry: Pullback in Fib 0.5–0.618 ({SAFE_ENTRY_TF}) — Pflicht\n"
+        f"• + Volumen-Bestätigung am Safe-Entry: Vol>{ENTRY_VOL_FACTOR:.2f}×MA20 & > Vor-Kerze\n"
         "• HTF strikt aligned (15m/1h/4h)\n"
-        f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20\n"
+        f"• Volumen (Trigger-TF): Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20\n"
         f"• ATR%-Schwelle aktiv (≥ {MIN_ATR_PCT:.2f}%)\n"
         f"• Wahrscheinlichkeit ≥ {PROB_MIN}%\n"
         "• TP1=15m, TP2=1h, TP3=4h (sofern vorhanden). Fallback: ATR (weiter entfernte TP2/TP3)\n"
@@ -438,12 +444,28 @@ async def scan_once():
             df_safe = fetch_df(sym, SAFE_ENTRY_TF)
             df_safe_closed = df_safe.iloc[:-1] if len(df_safe) > 1 else df_safe
             imp = last_impulse(df_safe_closed)
+
             safe_ok_long, safe_ok_short = False, False
-            if imp is not None and len(df_safe_closed):
-                price_safe = float(df_safe_closed["close"].iloc[-1])
-                long_ok, _ = fib_zone_ok(price_safe, imp, "LONG")
-                short_ok, _ = fib_zone_ok(price_safe, imp, "SHORT")
-                safe_ok_long, safe_ok_short = long_ok, short_ok
+            entry_vol_long_ok, entry_vol_short_ok = False, False
+
+            if imp is not None and len(df_safe_closed) >= 2:
+                price_safe   = float(df_safe_closed["close"].iloc[-1])
+                long_ok, _   = fib_zone_ok(price_safe, imp, "LONG")
+                short_ok, _  = fib_zone_ok(price_safe, imp, "SHORT")
+
+                # Volumen-Bestätigung direkt am Safe-Entry (15m)
+                v = df_safe_closed["volume"]
+                v_ma = vol_sma(v, 20)
+                v_last, v_prev = float(v.iloc[-1]), float(v.iloc[-2])
+                vma_last = float(v_ma.iloc[-1]) if not math.isnan(v_ma.iloc[-1]) else 0.0
+                vol_conf = (v_last > ENTRY_VOL_FACTOR * max(vma_last, 1e-12)) and (v_last > v_prev)
+
+                entry_vol_long_ok  = bool(vol_conf)
+                entry_vol_short_ok = bool(vol_conf)
+
+                # Nur wenn Fib-Zone UND Volumen-Bestätigung gleichzeitig passen
+                safe_ok_long  = bool(long_ok  and (not REQUIRE_ENTRY_VOL or entry_vol_long_ok))
+                safe_ok_short = bool(short_ok and (not REQUIRE_ENTRY_VOL or entry_vol_short_ok))
 
             # Trendfilter
             up_all, dn_all = True, True
@@ -480,7 +502,9 @@ async def scan_once():
                         "direction": direction, "prob": prob, "throttled": throttled,
                         "ok": ok_tags, "warn": warn_tags,
                         "price": trig["price"], "atr": trig["atr"],
-                        "sr_used": used_sr, "safe_entry": (safe_ok_long if direction=="LONG" else safe_ok_short)
+                        "sr_used": used_sr,
+                        "safe_entry": (safe_ok_long if direction=="LONG" else safe_ok_short),
+                        "entry_vol_conf": (entry_vol_long_ok if direction=="LONG" else entry_vol_short_ok),
                     }
                     if not throttled:
                         await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, maybe_tp3,
@@ -519,6 +543,7 @@ async def root():
         "filters": TF_FILTERS,
         "scan_interval_s": SCAN_INTERVAL_S,
         "sr_tps": {"tp1": SR_TF_TP1, "tp2": SR_TF_TP2, "tp3": SR_TF_TP3},
+        "entry_vol_factor": ENTRY_VOL_FACTOR,
         "info": "Background scanner active. TradingView not required."
     }
 
@@ -533,6 +558,6 @@ async def status():
 
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + Safe-Entry (Fib 15m) + S/R (15m/1h/4h)*, Scan: alle 15 Min."
+    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + Safe-Entry (Fib 15m + Vol) + S/R (15m/1h/4h)*, Scan: alle 15 Min."
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True, "mode": "streng_sr_safe"}
