@@ -88,7 +88,7 @@ DAILY_SILENCE_S    = 24 * 60 * 60
 COMPACT_SIGNALS = True
 
 # ====== Early-STRIKT (optional, gleiche Qualität wie Hauptsignal) ======
-EARLY_WARN_ENABLED     = False     # auf True stellen, wenn Frühwarnungen gewünscht sind
+EARLY_WARN_ENABLED     = True    # auf True stellen, wenn Frühwarnungen gewünscht sind
 EARLY_STRICT_MODE      = True      # behält hohe Qualität (CL3)
 EARLY_COOLDOWN_S       = 180       # separater Cooldown für Early
 EARLY_PROB_MIN         = 60        # gleich wie PROB_MIN
