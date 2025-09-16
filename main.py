@@ -88,7 +88,7 @@ DAILY_SILENCE_S    = 24 * 60 * 60
 COMPACT_SIGNALS = True
 
 # ====== Early-STRIKT (optional, gleiche Qualität wie Hauptsignal) ======
-EARLY_WARN_ENABLED     = True      # Frühwarnungen AN
+EARLY_WARN_ENABLED     = False     # auf True stellen, wenn Frühwarnungen gewünscht sind
 EARLY_STRICT_MODE      = True      # behält hohe Qualität (CL3)
 EARLY_COOLDOWN_S       = 180       # separater Cooldown für Early
 EARLY_PROB_MIN         = 60        # gleich wie PROB_MIN
@@ -282,11 +282,11 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
 def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: str, min_strength: int) -> float | None:
     candidates = []
     for price, strength in levels:
-    if strength < min_strength:
+        if strength < min_strength:
             continue
-    if direction == "LONG" and price > ref_price:
+        if direction == "LONG" and price > ref_price:
             candidates.append(price)
-    elif direction == "SHORT" and price < ref_price:
+        elif direction == "SHORT" and price < ref_price:
             candidates.append(price)
     if not candidates:
         return None
@@ -609,7 +609,7 @@ async def scan_once():
                         prob = prob_score(ew_dir=="LONG", ew_dir=="SHORT", True, True, True)
                         if ew_score >= 5: prob = min(prob+5, 90)
                         if prob >= EARLY_PROB_MIN:
-                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT}"
+                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT"
                             if not need_early_throttle(ekey, now, EARLY_COOLDOWN_S):
                                 tags = []
                                 if ew_cons["vol"]: tags.append("Vol OK")
