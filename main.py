@@ -282,11 +282,11 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
 def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: str, min_strength: int) -> float | None:
     candidates = []
     for price, strength in levels:
-        if strength < min_strength:
+    if strength < min_strength:
             continue
     if direction == "LONG" and price > ref_price:
             candidates.append(price)
-        elif direction == "SHORT" and price < ref_price:
+    elif direction == "SHORT" and price < ref_price:
             candidates.append(price)
     if not candidates:
         return None
