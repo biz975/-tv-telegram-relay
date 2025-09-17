@@ -75,11 +75,11 @@ TP2_ATR = 2.2
 TP3_ATR = 3.4
 
 # ====== Checklisten-Settings (gelockert) ======
-MIN_ATR_PCT        = 0.20
-VOL_SPIKE_FACTOR   = 1.30
-REQUIRE_VOL_SPIKE  = False         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
-PROB_MIN           = 70            # <— Mindestens 70% Wahrscheinlichkeit
-COOLDOWN_S         = 300
+MIN_ATR_PCT        = 0.25
+VOL_SPIKE_FACTOR   = 1.50
+REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
+PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
+COOLDOWN_S         = 600
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
 DAILY_SILENCE_S    = 24 * 60 * 60
@@ -90,12 +90,12 @@ COMPACT_SIGNALS = True
 # ====== Early-STRIKT (optional, gleiche Qualität wie Hauptsignal) ======
 EARLY_WARN_ENABLED     = True
 EARLY_STRICT_MODE      = True
-EARLY_COOLDOWN_S       = 180
-EARLY_PROB_MIN         = 60
-EARLY_VOL_FACTOR       = 1.15
-EARLY_WICK_MIN_PCT     = 35.0
+EARLY_COOLDOWN_S       = 300
+EARLY_PROB_MIN         = 70
+EARLY_VOL_FACTOR       = 1.40
+EARLY_WICK_MIN_PCT     = 45.0
 EARLY_BOS_LOOKBACK     = 30
-EARLY_RETEST_MAX_BARS  = 6
+EARLY_RETEST_MAX_BARS  = 4
 
 # Micro-Fib (5m) Qualität des ersten Pullbacks nach BOS
 MICRO_FIB_ENABLED      = True
