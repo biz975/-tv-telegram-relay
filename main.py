@@ -596,124 +596,6 @@ def early_confluence(df5: pd.DataFrame) -> Tuple[str | None, int, Dict[str,bool]
         return "LONG", score, cons, lvl_up
     return None, 0, cons, 0.0
 
-# ====== Chartpattern (15m / 1h / 4h) ======
-# Heuristische Erkennung: Flaggen/Dreiecke (Fortsetzung) und Double Top/Bottom, H&S-lite (Reversal)
-PATTERN_ENABLED = True
-PATTERN_BONUS_CONT = 5     # Bonus % für Fortsetzung in Trendrichtung
-PATTERN_KO_REV_1H4H = True # Starke Gegen-Reversal auf 1h/4h als KO
-PATTERN_TOL_PCT = 0.25/100.0
-PATTERN_LOOKBACK_BARS = 120
-
-def _pct(a: float, b: float) -> float:
-    return abs(a-b)/max(b,1e-12)
-
-def _recent_slice(df: pd.DataFrame, n: int) -> pd.DataFrame:
-    return df.iloc[-min(len(df), n):].copy()
-
-def _swing_points(df: pd.DataFrame, L: int=3, R: int=3):
-    hi_idx = find_pivot_indices(list(df['high'].values), L, R, True)
-    lo_idx = find_pivot_indices(list(df['low'].values),  L, R, False)
-    return hi_idx, lo_idx
-
-def detect_double_top(df: pd.DataFrame, tol_pct: float=PATTERN_TOL_PCT) -> bool:
-    hi_idx, _ = _swing_points(df, 3, 3)
-    if len(hi_idx) < 2: return False
-    p1 = df['high'].iloc[hi_idx[-1]]
-    p2 = df['high'].iloc[hi_idx[-2]]
-    return _pct(p1, p2) <= tol_pct
-
-def detect_double_bottom(df: pd.DataFrame, tol_pct: float=PATTERN_TOL_PCT) -> bool:
-    _, lo_idx = _swing_points(df, 3, 3)
-    if len(lo_idx) < 2: return False
-    p1 = df['low'].iloc[lo_idx[-1]]
-    p2 = df['low'].iloc[lo_idx[-2]]
-    return _pct(p1, p2) <= tol_pct
-
-def detect_contracting_range(df: pd.DataFrame) -> bool:
-    # Triangles/Wedges via fallende Highs & steigende Lows (Heuristik)
-    sl = _recent_slice(df, 60)
-    highs = sl['high'].values
-    lows  = sl['low'].values
-    if len(highs) < 10: return False
-    # Fit simple linear trend on highs/lows (least squares)
-    import numpy as np
-    x = np.arange(len(highs))
-    a_hi, b_hi = np.polyfit(x, highs, 1)  # high ~ a_hi*x + b_hi
-    a_lo, b_lo = np.polyfit(x, lows, 1)   # low  ~ a_lo*x + b_lo
-    # contracting if highs trending down and lows trending up
-    return (a_hi < 0) and (a_lo > 0)
-
-def detect_flag(df: pd.DataFrame) -> bool:
-    # Flagge: nach Impuls eine gegenläufige, enge, trendende Korrektur mit fallendem ATR
-    sl = _recent_slice(df, 40)
-    if len(sl) < 20: return False
-    atrv = atr(sl['high'], sl['low'], sl['close'], 14)
-    if atrv.isna().any(): return False
-    # ATR nimmt in den letzten 15 Bars ab (Konsolidierung)
-    atr_dec = float(atrv.iloc[-1]) < float(atrv.iloc[-15])
-    # Korrektur-Drift: Close liegt im Mittel in der oberen/unteren Hälfte der Range
-    rng = sl['high'].max() - sl['low'].min()
-    if rng <= 0: return False
-    mean_pos = (sl['close'] - sl['low'].min()).mean() / rng
-    # neutrale Flag-Annahme (0.35..0.65), keine starke Trendverschiebung
-    return atr_dec and (0.25 <= mean_pos <= 0.75)
-
-def assess_patterns_for_direction(symbol: str, direction: str) -> tuple[bool, int, list[str], list[str]]:
-    """
-    Prüft 15m/1h/4h auf Fortsetzung/Reverse.
-    Rückgabe: (ok, bonus, ok_tags, warn_tags)
-    ok=False bedeutet hartes KO (z.B. starkes Reversal gegen Setup auf 1h/4h).
-    """
-    if not PATTERN_ENABLED:
-        return True, 0, [], []
-
-    ok_tags, warn_tags = [], []
-    bonus = 0
-    try:
-        df15 = fetch_df(symbol, "15m", limit=max(LOOKBACK, PATTERN_LOOKBACK_BARS))
-        df1h = fetch_df(symbol, "1h",  limit=max(LOOKBACK, PATTERN_LOOKBACK_BARS))
-        df4h = fetch_df(symbol, "4h",  limit=max(LOOKBACK, PATTERN_LOOKBACK_BARS))
-    except Exception:
-        return True, 0, [], ["Pattern: Fetch-Error"]
-
-    # Fortsetzung (Bonus) auf 15m/1h
-    cont15 = detect_flag(df15) or detect_contracting_range(df15)
-    cont1h = detect_contracting_range(df1h)
-    if cont15: ok_tags.append("Pattern15m: Flag/Dreieck")
-    if cont1h: ok_tags.append("Pattern1h: Dreieck/Range")
-
-    if cont15 or cont1h:
-        bonus += PATTERN_BONUS_CONT
-
-    # Reversal (KO) bevorzugt auf 1h/4h
-    rev_1h = (detect_double_top(df1h) if direction=="SHORT" else detect_double_bottom(df1h)) if direction in ("LONG","SHORT") else False
-    rev_4h = (detect_double_top(df4h) if direction=="SHORT" else detect_double_bottom(df4h)) if direction in ("LONG","SHORT") else False
-
-    # Zusätzlich: konträre Dreiecke gegen Richtung als Warnung (kein KO)
-    # (z.B. auf LONG: fallende Highs ohne steigende Lows → eher bärisch)
-    # grobe Heuristik via simple slopes
-    try:
-        import numpy as np
-        def slope_pair(df):
-            sl = _recent_slice(df, 80)
-            x = np.arange(len(sl))
-            a_hi,_ = np.polyfit(x, sl['high'].values, 1)
-            a_lo,_ = np.polyfit(x, sl['low'].values, 1)
-            return a_hi, a_lo
-        a_hi1h, a_lo1h = slope_pair(df1h)
-        if direction=="LONG" and a_hi1h<0 and a_lo1h<=0:
-            warn_tags.append("1h: fallende Highs (Vorsicht)")
-        if direction=="SHORT" and a_lo1h>0 and a_hi1h>=0:
-            warn_tags.append("1h: steigende Lows (Vorsicht)")
-    except Exception:
-        pass
-
-    if PATTERN_KO_REV_1H4H and (rev_1h or rev_4h):
-        # KO nur wenn Reversal GEGEN die gewünschte Richtung steht und Struktur frisch ist
-        return False, 0, ok_tags, warn_tags + ["Reversal 1h/4h gegen Setup"]
-
-    return True, bonus, ok_tags, warn_tags
-
 # ====== Messaging ======
 async def send_signal(symbol: str, tf: str, direction: str,
                       entry: float, sl: float, tp1: float, tp2: float, tp3: float | None,
@@ -836,7 +718,7 @@ async def scan_once():
                         prob = prob_score(ew_dir=="LONG", ew_dir=="SHORT", True, True, True)
                         if ew_score >= 5: prob = min(prob+5, 90)
                         if prob >= EARLY_PROB_MIN:
-                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT}"
+                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT"
                             if not need_early_throttle(ekey, now, EARLY_COOLDOWN_S):
                                 tags = []
                                 if ew_cons["vol"]: tags.append("Vol OK")
@@ -884,12 +766,6 @@ async def scan_once():
                 dn_all &= dn
                 time.sleep(ex.rateLimit/1000)
 
-            # Pattern-Check (15m/1h/4h) – separat je Richtung werten
-            patt_cache = {}
-            for d in ("LONG","SHORT"):
-                okp, bonp, okp_tags, warnp_tags = assess_patterns_for_direction(sym, d)
-                patt_cache[d] = (okp, bonp, okp_tags, warnp_tags)
-
             # Richtung(en) prüfen
             passes = []
             for direction in ("LONG","SHORT"):
@@ -897,20 +773,9 @@ async def scan_once():
                     direction, trig, up_all, dn_all, safe_ok_long, safe_ok_short
                 )
                 if passed:
-                    # Pattern KO/Bonus berücksichtigen
-                    patt_ok, patt_bonus, patt_ok_tags, patt_warn_tags = patt_cache.get(direction, (True,0,[],[]))
-                    if not patt_ok:
-                        last_scan_report["symbols"][sym] = {"skip": f"Pattern-KO ({direction})"}
-                        continue
-                    ok_tags += patt_ok_tags
-                    warn_tags += patt_warn_tags
-
                     prob = prob_score(direction=="LONG", direction=="SHORT",
                                       trig["vol_ok"], up_all or dn_all,
                                       trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"])
-
-                    # Pattern-Bonus
-                    prob = min(prob + patt_bonus, 90)
 
                     # ====== HEATMAP START ======
                     hm_bonus = 0
