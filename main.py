@@ -20,25 +20,41 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 # 70 liquide Spot-Paare (MEXC-Notation "XXX/USDT")
 SYMBOLS = [
-    # bestehende 25
-    "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
-    "TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT",
-    "TRX/USDT","DOT/USDT","MATIC/USDT","SHIB/USDT","PEPE/USDT",
-    "LTC/USDT","BCH/USDT","ATOM/USDT","NEAR/USDT","APT/USDT",
-    "ARB/USDT","OP/USDT","SUI/USDT","INJ/USDT","FIL/USDT",
+    # ==== Top Marketcap & Liquidität ====
+    "BTC/USDT",   # ✔ MEXC Spot (Beispielseite). 0
+    "ETH/USDT",   # ✔ MEXC Spot. 1
+    "BNB/USDT",   # ✔ MEXC Spot. 2
+    "SOL/USDT",   # ✔ MEXC Spot. 3
+    "XRP/USDT",   # ✔ MEXC Spot. 4
+    "ADA/USDT",   # ✔ MEXC Spot. 5
+    "AVAX/USDT",  # ✔ MEXC Spot. 6
+    "DOT/USDT",   # ✔ MEXC Spot. 7
+    "TRX/USDT",   # ✔ MEXC Spot. 8
+    "LINK/USDT",  # ✔ MEXC Spot. 9
+    "POL/USDT",   # (ehem. MATIC) ✔ MEXC Spot. 10
+    "ATOM/USDT",  # ✔ MEXC Spot. 11
+    "NEAR/USDT",  # ✔ MEXC Spot. 12
+    "APT/USDT",   # ✔ MEXC Spot. 13
+    "ARB/USDT",   # ✔ MEXC Spot. 14
 
-    # +25 neue
-    "AAVE/USDT","APE/USDT","ARKM/USDT","BLUR/USDT","CHZ/USDT",
-    "COMP/USDT","CRV/USDT","DYDX/USDT","EGLD/USDT","FET/USDT",
-    "GALA/USDT","GMX/USDT","GRT/USDT","ICP/USDT","IMX/USDT",
-    "LDO/USDT","MKR/USDT","PYTH/USDT","RNDR/USDT","RUNE/USDT",
-    "SEI/USDT","STX/USDT","TIA/USDT","UNI/USDT","ONDO/USDT",
+    # ==== High Volatility / Movers ====
+    "DOGE/USDT",  # ✔ MEXC Spot. 15
+    "SHIB/USDT",  # ✔ MEXC Spot. 16
+    "PEPE/USDT",  # ✔ MEXC Spot. 17
+    "INJ/USDT",   # ✔ MEXC Spot. 18
+    "OP/USDT",    # ✔ MEXC Spot. 19
+    "SUI/USDT",   # ✔ MEXC Spot. 20
+    "SEI/USDT",   # ✔ MEXC Spot. 21
+    "TIA/USDT",   # ✔ MEXC Spot. 22
+    "STX/USDT",   # ✔ MEXC Spot. 23
+    "ONDO/USDT",  # ✔ MEXC Spot. 24
 
-    # +20 weitere (insgesamt 70)
-    "ALGO/USDT","ANKR/USDT","BAT/USDT","COTI/USDT","DASH/USDT",
-    "ENJ/USDT","FLOW/USDT","FTM/USDT","HNT/USDT","JTO/USDT",
-    "KAVA/USDT","KAS/USDT","KLAY/USDT","MANA/USDT","MINA/USDT",
-    "NTRN/USDT","OCEAN/USDT","QNT/USDT","ROSE/USDT","ZIL/USDT",
+    # ==== Volatile + Trending Alts ====
+    "PYTH/USDT",    # ✔ MEXC Spot. 25
+    "RENDER/USDT",  # ✔ MEXC Spot (RNDR→RENDER). 26
+    "LDO/USDT",     # ✔ MEXC Spot. 27
+    "IMX/USDT",     # ✔ MEXC Spot. 28
+    "FET/USDT",     # ✔ MEXC Spot. 29
 ]
 
 # ====== Analyse & Scan ======
