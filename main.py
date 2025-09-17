@@ -1,8 +1,7 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
-# MODE: Strict, ≥80% — Safe-Entry PFLICHT (mit Volumen-Bestätigung), Volumen-Spike PFLICHT, PROB_MIN=80
+# MODE: Locker, aber ≥70% — Safe-Entry optional (mit Volumen-Bestätigung), Volumen-Spike nur Bonus, PROB_MIN=70
 # S/R-Ziele (15m/1h/4h), Scan alle 15 Minuten
 # Early-STRIKT (BOS+Retest, EMA-Stack, Micro-Fib) bleibt aktiv
-# Heatmap-Block: Entries nahe Orderwalls werden verworfen
 
 import os, asyncio, time, math
 from datetime import datetime, timezone
@@ -21,16 +20,21 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 # 70 liquide Spot-Paare (MEXC-Notation "XXX/USDT")
 SYMBOLS = [
+    # bestehende 25
     "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
     "TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT",
     "TRX/USDT","DOT/USDT","MATIC/USDT","SHIB/USDT","PEPE/USDT",
     "LTC/USDT","BCH/USDT","ATOM/USDT","NEAR/USDT","APT/USDT",
     "ARB/USDT","OP/USDT","SUI/USDT","INJ/USDT","FIL/USDT",
+
+    # +25 neue
     "AAVE/USDT","APE/USDT","ARKM/USDT","BLUR/USDT","CHZ/USDT",
     "COMP/USDT","CRV/USDT","DYDX/USDT","EGLD/USDT","FET/USDT",
     "GALA/USDT","GMX/USDT","GRT/USDT","ICP/USDT","IMX/USDT",
     "LDO/USDT","MKR/USDT","PYTH/USDT","RNDR/USDT","RUNE/USDT",
     "SEI/USDT","STX/USDT","TIA/USDT","UNI/USDT","ONDO/USDT",
+
+    # +20 weitere (insgesamt 70)
     "ALGO/USDT","ANKR/USDT","BAT/USDT","COTI/USDT","DASH/USDT",
     "ENJ/USDT","FLOW/USDT","FTM/USDT","HNT/USDT","JTO/USDT",
     "KAVA/USDT","KAS/USDT","KLAY/USDT","MANA/USDT","MINA/USDT",
@@ -38,54 +42,52 @@ SYMBOLS = [
 ]
 
 # ====== Analyse & Scan ======
-TF_TRIGGER = "5m"
-TF_FILTERS = ["15m","1h","4h"]
+TF_TRIGGER = "5m"                  # Signal-TF (Bias/Vol/RSI/EMAs)
+TF_FILTERS = ["15m","1h","4h"]     # Trendfilter (streng)
 LOOKBACK = 300
-SCAN_INTERVAL_S = 15 * 60
+SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
-# ====== Safe-Entry (Strict) ======
-SAFE_ENTRY_REQUIRED = True
-SAFE_ENTRY_TF = "15m"
-PIVOT_LEFT_TRIG = 3
+# ====== Safe-Entry (Pullback in Fib-Zone auf 15m) ======
+SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriterium
+SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
+PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
-FIB_TOL_PCT = 0.10 / 100.0
-ENTRY_VOL_FACTOR = 1.15
-REQUIRE_ENTRY_VOL = True
+FIB_TOL_PCT = 0.10 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
-# ====== S/R ======
-SR_TF_TP1 = "15m"
-SR_TF_TP2 = "1h"
-SR_TF_TP3 = "4h"
-PIVOT_LEFT = 3
+# Volumen-Bestätigung direkt am Safe-Entry (15m)
+ENTRY_VOL_FACTOR = 1.15            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
+REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestätigung (Qualitätsanker)
+
+# ====== S/R (Timeframes für TPs & SL) ======
+SR_TF_TP1 = "15m"                  # TP1 aus 15m
+SR_TF_TP2 = "1h"                   # TP2 aus 1h (wenn möglich)
+SR_TF_TP3 = "4h"                   # TP3 aus 4h (optional)
+PIVOT_LEFT = 3                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 3
-CLUSTER_PCT = 0.15 / 100.0
-MIN_STRENGTH = 3
-TP2_FACTOR = 1.20
+CLUSTER_PCT = 0.15 / 100.0         # Cluster-Toleranz (±0.15 %)
+MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
+TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
-# ====== ATR Fallback ======
+# ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.5
 TP1_ATR = 1.0
 TP2_ATR = 2.2
 TP3_ATR = 3.4
 
-# ====== Checklist Settings (Strict) ======
-MIN_ATR_PCT        = 0.25          # vorher 0.20
+# ====== Checklisten-Settings (gelockert) ======
+MIN_ATR_PCT        = 0.20
 VOL_SPIKE_FACTOR   = 1.30
-REQUIRE_VOL_SPIKE  = True          # Pflicht
-PROB_MIN           = 80            # vorher 70
+REQUIRE_VOL_SPIKE  = False         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
+PROB_MIN           = 70            # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 300
+
+# === 24h-Mute pro Coin nach gesendetem Signal ===
 DAILY_SILENCE_S    = 24 * 60 * 60
-COMPACT_SIGNALS    = True
 
-# Zusätzliche Strict-Regeln
-RSI_LONG_MAX   = 62.0              # enger als 70
-RSI_SHORT_MIN  = 38.0              # enger als 30
-REQUIRE_CANDLE_CONFIRM = True      # Close>Open (LONG) bzw. Close<Open (SHORT)
+# ====== Anzeige-Settings ======
+COMPACT_SIGNALS = True
 
-# Heatmap-Block
-HEATMAP_BLOCK_ENTRY = True
-
-# ====== Early Strict ======
+# ====== Early-STRIKT (optional, gleiche Qualität wie Hauptsignal) ======
 EARLY_WARN_ENABLED     = True
 EARLY_STRICT_MODE      = True
 EARLY_COOLDOWN_S       = 180
@@ -95,7 +97,7 @@ EARLY_WICK_MIN_PCT     = 35.0
 EARLY_BOS_LOOKBACK     = 30
 EARLY_RETEST_MAX_BARS  = 6
 
-# Micro-Fib (für Early)
+# Micro-Fib (5m) Qualität des ersten Pullbacks nach BOS
 MICRO_FIB_ENABLED      = True
 MICRO_FIB_TOL_PCT      = 0.15 / 100.0
 MICRO_FIB_PIVOT_L      = 2
@@ -106,13 +108,13 @@ if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
 bot = Bot(token=TG_TOKEN)
-app = FastAPI(title="MEXC Auto Scanner → Telegram (STRICT ≥80% + S/R)")
+app = FastAPI(title="MEXC Auto Scanner → Telegram (Locker ≥70% + S/R)")
 ex = ccxt.mexc({"enableRateLimit": True})
 
 last_signal: Dict[str, float] = {}
-early_last_signal: Dict[str, float] = {}
+early_last_signal: Dict[str, float] = {}  # separater Cooldown-Speicher
 last_scan_report: Dict[str, Any] = {"ts": None, "symbols": {}}
-daily_mute: Dict[str, float] = {}
+daily_mute: Dict[str, float] = {}  # key="SYM" -> timestamp letztes Signal
 
 # ====== TA Helpers ======
 def ema(series: pd.Series, length: int):
@@ -127,59 +129,6 @@ def atr(h, l, c, length: int = 14):
 def vol_sma(v, length: int = 20):
     return ta.sma(v, length)
 
-# ====== Telegram Helpers ======
-async def send_signal(text: str):
-    try:
-        await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
-    except Exception as e:
-        print("Telegram error:", e)
-
-async def send_mode_banner():
-    banner = "🤖 *MEXC Scanner gestartet*\nMode: STRICT (≥80% + Safe-Entry Pflicht + Heatmap-Block)"
-    await send_signal(banner)
-
-# ====== Heatmap / Orderbook-Cluster (MEXC) ======
-ORDERBOOK_LIMIT = 100
-ORDERBOOK_CLUSTER_PCT = 0.05   # ≥5% vom Gesamtvolumen
-ORDERBOOK_NEAR_PCT = 0.25 / 100.0  # ±0.25%
-
-def get_orderbook_clusters(symbol: str) -> Dict[str, List[Tuple[float, float]]]:
-    try:
-        ob = ex.fetch_order_book(symbol, limit=ORDERBOOK_LIMIT)
-        bids = ob.get("bids", []); asks = ob.get("asks", [])
-        total_bid = sum([b[1] for b in bids]) or 1.0
-        total_ask = sum([a[1] for a in asks]) or 1.0
-        big_bids = [(float(b[0]), float(b[1])) for b in bids if b[1] >= ORDERBOOK_CLUSTER_PCT * total_bid]
-        big_asks = [(float(a[0]), float(a[1])) for a in asks if a[1] >= ORDERBOOK_CLUSTER_PCT * total_ask]
-        return {"bids": big_bids, "asks": big_asks}
-    except Exception as e:
-        return {"bids": [], "asks": [], "error": str(e)}
-
-def heatmap_check(symbol: str, price: float, direction: str, tp1: float | None, tp2: float | None) -> Tuple[List[str], List[str]]:
-    ok, warn = [], []
-    clusters = get_orderbook_clusters(symbol)
-    if "error" in clusters:
-        warn.append("Heatmap Error")
-        return ok, warn
-
-    near_clusters = clusters["asks"] if direction=="LONG" else clusters["bids"]
-    far_clusters  = clusters["bids"] if direction=="LONG" else clusters["asks"]
-
-    for lvl, size in near_clusters:
-        if abs(price - lvl) / max(price, 1e-12) <= ORDERBOOK_NEAR_PCT:
-            warn.append(f"Entry nahe Orderwall {round(lvl, 6)}")
-            break
-
-    for target in [tp1, tp2]:
-        if target is None: continue
-        for lvl, size in far_clusters:
-            if abs(target - lvl) / max(target, 1e-12) <= ORDERBOOK_NEAR_PCT:
-                ok.append(f"TP nahe Orderwall {round(lvl, 6)}")
-                break
-
-    return ok, warn
-
-# ====== Weitere TA/Analyse-Funktionen ======
 def bullish_engulf(o, h, l, c) -> bool:
     return (c.iloc[-1] > o.iloc[-1]) and (o.iloc[-1] <= l.iloc[-2]) and (c.iloc[-1] >= h.iloc[-2])
 
@@ -187,19 +136,19 @@ def bearish_engulf(o, h, l, c) -> bool:
     return (c.iloc[-1] < o.iloc[-1]) and (o.iloc[-1] >= l.iloc[-2]) and (c.iloc[-1] <= l.iloc[-2])
 
 def prob_score(long_ok: bool, short_ok: bool, vol_ok: bool, trend_ok: bool, ema200_align: bool) -> int:
-    base = 80 if (long_ok or short_ok) else 0
+    base = 70 if (long_ok or short_ok) else 0
     if base == 0: return 0
     base += 5 if vol_ok else 0
     base += 5 if trend_ok else 0
     base += 5 if ema200_align else 0
-    return min(base, 95)
+    return min(base, 90)
 
 def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame:
     ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
     return df
 
-# ====== Helper: 24h-Mute pro Coin ======
+# ====== Helper 24h-Mute ======
 def is_daily_muted(symbol: str, now_ts: float) -> Tuple[bool, float]:
     last_ts = daily_mute.get(symbol, 0.0)
     elapsed = now_ts - last_ts
@@ -207,24 +156,24 @@ def is_daily_muted(symbol: str, now_ts: float) -> Tuple[bool, float]:
         return True, DAILY_SILENCE_S - elapsed
     return False, 0.0
 
-# ====== Trigger (5m) & HTF-Alignment ======
+# ====== Trigger & Trend ======
 def compute_trend_ok(df: pd.DataFrame) -> Tuple[bool,bool,bool]:
-    ema200 = ta.ema(df["close"], 200)
+    ema200 = ema(df["close"], 200)
     up = df["close"].iloc[-1] > ema200.iloc[-1]
     down = df["close"].iloc[-1] < ema200.iloc[-1]
     return up, down, not math.isnan(df["close"].iloc[-1])
 
 def analyze_trigger(df: pd.DataFrame) -> Dict[str, Any]:
-    df["ema50"]  = ta.ema(df.close, 50)
-    df["ema100"] = ta.ema(df.close, 100)
-    df["ema200"] = ta.ema(df.close, 200)
-    df["rsi"]    = ta.rsi(df.close, 14)
-    df["atr"]    = ta.atr(df.high, df.low, df.close, 14)
-    df["volma"]  = ta.sma(df.volume, 20)
+    df["ema50"]  = ema(df.close, 50)
+    df["ema100"] = ema(df.close, 100)
+    df["ema200"] = ema(df.close, 200)
+    df["rsi"]    = rsi(df.close, 14)
+    df["atr"]    = atr(df.high, df.low, df.close, 14)
+    df["volma"]  = vol_sma(df.volume, 20)
 
     o, h, l, c, v = df.open, df.high, df.low, df.close, df.volume
-    long_fast  = (c.iloc[-1] > df.ema50.iloc[-1] > df.ema100.iloc[-1]) and (df.rsi.iloc[-1] <= RSI_LONG_MAX)
-    short_fast = (c.iloc[-1] < df.ema50.iloc[-1] < df.ema100.iloc[-1]) and (df.rsi.iloc[-1] >= RSI_SHORT_MIN)
+    long_fast  = (c.iloc[-1] > df.ema50.iloc[-1] > df.ema100.iloc[-1]) and (df.rsi.iloc[-1] <= 65)
+    short_fast = (c.iloc[-1] < df.ema50.iloc[-1] < df.ema100.iloc[-1]) and (df.rsi.iloc[-1] >= 35)
 
     bull   = bullish_engulf(o, h, l, c)
     bear   = bearish_engulf(o, h, l, c)
@@ -239,11 +188,9 @@ def analyze_trigger(df: pd.DataFrame) -> Dict[str, Any]:
         "ema200_up": (c.iloc[-1] > df.ema200.iloc[-1]),
         "ema200_dn": (c.iloc[-1] < df.ema200.iloc[-1]),
         "rsi": float(df.rsi.iloc[-1]),
-        "o": float(o.iloc[-1]),
-        "c": float(c.iloc[-1]),
     }
 
-# ====== Safe-Entry (letzte Impulsbewegung + Fib 0.5–0.618 auf 15m) ======
+# ====== Safe-Entry (letzte Impulsbewegung per Pivots, SAFE_ENTRY_TF) ======
 def find_pivot_indices(values: List[float], left: int, right: int, is_high: bool) -> List[int]:
     idxs = []
     n = len(values)
@@ -281,18 +228,20 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         fib50  = lo_v + 0.5  * (hi_v - lo_v)
         fib618 = lo_v + 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib50, fib618])
-        zmin *= (1 - FIB_TOL_PCT); zmax *= (1 + FIB_TOL_PCT)
+        zmin *= (1 - FIB_TOL_PCT)
+        zmax *= (1 + FIB_TOL_PCT)
         ok = (direction == "LONG") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
     else:
         fib50  = hi_v - 0.5  * (hi_v - lo_v)
         fib618 = hi_v - 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib618, fib50])
-        zmin *= (1 - FIB_TOL_PCT); zmax *= (1 + FIB_TOL_PCT)
+        zmin *= (1 - FIB_TOL_PCT)
+        zmax *= (1 + FIB_TOL_PCT)
         ok = (direction == "SHORT") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
 
-# ====== S/R-Ziele (15m/1h/4h) ======
+# ====== S/R-Tools (für 15m/1h/4h) ======
 def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
     highs = df["high"].values
     lows  = df["low"].values
@@ -371,7 +320,6 @@ def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -
             tp3 = nearest_level(sup_4h, tp2, "SHORT", MIN_STRENGTH)
             return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 is not None else None), True
 
-    # ATR-Fallback falls keine S/R-Konfluenz vorliegt
     if direction == "LONG":
         sl  = round(entry - ATR_SL  * atrv, 6)
         tp1 = round(entry + TP1_ATR * atrv, 6)
@@ -384,12 +332,12 @@ def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -
         tp3 = round(entry - TP3_ATR * atrv, 6)
     return entry, sl, tp1, tp2, tp3, False
 
-# ====== Checkliste (STRICT, ≥80%) ======
+# ====== Checkliste (gelockert, ≥70%) ======
 def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, dn_all: bool,
                             safe_ok_long: bool, safe_ok_short: bool) -> Tuple[bool, List[str], List[str]]:
     ok, warn = [], []
 
-    # ATR-Volatilität (KO)
+    # ATR-Volatilität als KO
     atr_pct = (trig["atr"] / max(trig["price"], 1e-9)) * 100.0
     if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
     else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
@@ -398,7 +346,7 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     if (up_all if direction=="LONG" else dn_all): ok.append("HTF align (15m/1h/4h)")
     else:                                         return (False, ok, ["HTF nicht aligned"])
 
-    # Bias (Engulf/EMA-Stack) (KO)
+    # Bias durch Engulf oder EMA-Stack (KO)
     bias_ok = (trig["bull"] or trig["long_fast"]) if direction=="LONG" else (trig["bear"] or trig["short_fast"])
     if bias_ok: ok.append("Engulf/EMA-Stack")
     else:       return (False, ok, ["Kein Engulf/EMA-Stack"])
@@ -408,7 +356,7 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     if ema200_ok: ok.append("EMA200 ok")
     else:         return (False, ok, ["EMA200 gegen Setup"])
 
-    # Volumen-Spike (Pflicht)
+    # Volumen-Spike: nur Pflicht wenn REQUIRE_VOL_SPIKE=True, sonst Bonus
     if REQUIRE_VOL_SPIKE:
         if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
         else:              return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
@@ -416,35 +364,30 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
         if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Bonus)")
         else:              warn.append("Vol normal (kein Spike)")
 
-    # Safe-Entry (Pflicht)
-    safe_ok = (safe_ok_long if direction=="LONG" else safe_ok_short)
+    # Safe-Entry (Fib 0.5–0.618 + optional Vol-Bestätigung): nur Pflicht wenn SAFE_ENTRY_REQUIRED=True
     if SAFE_ENTRY_REQUIRED:
-        if safe_ok: ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
-        else:       return (False, ok, [f"Kein Safe-Entry mit Vol-Bestätigung ({SAFE_ENTRY_TF})"])
-    else:
-        if safe_ok: ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
-        else:       warn.append(f"Kein Safe-Entry ({SAFE_ENTRY_TF})")
-
-    # RSI (eng)
-    if direction=="LONG":
-        if trig["rsi"] <= RSI_LONG_MAX: ok.append(f"RSI≤{RSI_LONG_MAX:.0f} (ok {trig['rsi']:.1f})")
-        else:                           return (False, ok, [f"RSI>{RSI_LONG_MAX:.0f} ({trig['rsi']:.1f})"])
-    else:
-        if trig["rsi"] >= RSI_SHORT_MIN: ok.append(f"RSI≥{RSI_SHORT_MIN:.0f} (ok {trig['rsi']:.1f})")
-        else:                            return (False, ok, [f"RSI<{RSI_SHORT_MIN:.0f} ({trig['rsi']:.1f})"])
-
-    # Candle-Confirm (Pflicht)
-    if REQUIRE_CANDLE_CONFIRM:
-        if direction=="LONG" and (trig["c"] > trig["o"]):
-            ok.append("Candle confirm (bull)")
-        elif direction=="SHORT" and (trig["c"] < trig["o"]):
-            ok.append("Candle confirm (bear)")
+        safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
+        if safe_ok:
+            ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
         else:
-            return (False, ok, ["Keine Candle-Confirm"])
+            return (False, ok, [f"Kein Safe-Entry mit Vol-Bestätigung ({SAFE_ENTRY_TF})"])
+    else:
+        safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
+        if safe_ok:
+            ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
+        else:
+            warn.append(f"Kein Safe-Entry ({SAFE_ENTRY_TF})")
+
+    # RSI nur als Hinweis
+    if direction=="LONG":
+        if trig["rsi"] > 70: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
+        else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
+    else:
+        if trig["rsi"] < 30: warn.append(f"RSI tief ({trig['rsi']:.1f})")
+        else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
 
     return (True, ok, warn)
 
-# ====== Throttle (Main & Early) ======
 def need_throttle(key: str, now: float, cool_s: int = COOLDOWN_S) -> bool:
     t = last_signal.get(key, 0.0)
     if now - t < cool_s:
@@ -459,7 +402,7 @@ def need_early_throttle(key: str, now: float, cool_s: int = EARLY_COOLDOWN_S) ->
     early_last_signal[key] = now
     return False
 
-# ====== Early-STRIKT (BOS+Retest + Vol + EMA-Stack + Micro-Fib) ======
+# ====== Early-STRIKT Helpers ======
 def wick_ratios(o, h, l, c) -> Tuple[float,float]:
     rng = max(h.iloc[-1] - l.iloc[-1], 1e-12)
     upper = h.iloc[-1] - max(o.iloc[-1], c.iloc[-1])
@@ -479,6 +422,41 @@ def bull_absorption(o, h, l, c, min_lower_pct: float) -> bool:
 def vol_above_ma(v: pd.Series, length: int = 20, factor: float = 1.15) -> bool:
     vma = ta.sma(v, length)
     return (not math.isnan(vma.iloc[-1])) and (v.iloc[-1] > factor * vma.iloc[-1]) and (v.iloc[-1] > v.iloc[-2])
+
+def swing_low_idx(df: pd.DataFrame, lookback: int = 30) -> int | None:
+    lo = df['low'].iloc[-lookback:].values
+    if len(lo) < 3: return None
+    i_rel = lo.argmin()
+    return len(df) - lookback + int(i_rel)
+
+def swing_high_idx(df: pd.DataFrame, lookback: int = 30) -> int | None:
+    hi = df['high'].iloc[-lookback:].values
+    if len(hi) < 3: return None
+    i_rel = hi.argmax()
+    return len(df) - lookback + int(i_rel)
+
+def bos_breakdown(df: pd.DataFrame, lookback: int) -> Tuple[bool, float]:
+    i = swing_low_idx(df, lookback)
+    if i is None or i >= len(df)-1: return (False, 0.0)
+    lvl = float(df['low'].iloc[i])
+    return (bool(df['close'].iloc[-1] < lvl), lvl)
+
+def bos_breakup(df: pd.DataFrame, lookback: int) -> Tuple[bool, float]:
+    i = swing_high_idx(df, lookback)
+    if i is None or i >= len(df)-1: return (False, 0.0)
+    lvl = float(df['high'].iloc[i])
+    return (bool(df['close'].iloc[-1] > lvl), lvl)
+
+def retest_happened(df: pd.DataFrame, level: float, direction: str, max_bars: int = 6) -> bool:
+    closes = df['close'].iloc[-max_bars:]
+    highs  = df['high'].iloc[-max_bars:]
+    lows   = df['low'].iloc[-max_bars:]
+    if direction == "SHORT":
+        touched = bool((highs >= level).any())
+        return touched and bool(closes.iloc[-1] < level)
+    else:
+        touched = bool((lows <= level).any())
+        return touched and bool(closes.iloc[-1] > level)
 
 def _pivot_idxs(vals: List[float], L: int, R: int, is_high: bool) -> List[int]:
     out=[]; n=len(vals)
@@ -519,27 +497,17 @@ def early_confluence(df5: pd.DataFrame) -> Tuple[str | None, int, Dict[str,bool]
     vol_ok   = vol_above_ma(v, 20, EARLY_VOL_FACTOR)
     bear_abs = bear_absorption(o,h,l,c, EARLY_WICK_MIN_PCT)
     bull_abs = bull_absorption(o,h,l,c, EARLY_WICK_MIN_PCT)
-    # BOS
-    hi = df5['high'].rolling(EARLY_BOS_LOOKBACK).max().iloc[-2]
-    lo = df5['low'].rolling(EARLY_BOS_LOOKBACK).min().iloc[-2]
-    bos_up = bool(c.iloc[-1] > hi); bos_dn = bool(c.iloc[-1] < lo)
-    # Retest in den letzten EARLY_RETEST_MAX_BARS
-    closes = df5['close'].iloc[-EARLY_RETEST_MAX_BARS:]
-    highs  = df5['high'].iloc[-EARLY_RETEST_MAX_BARS:]
-    lows   = df5['low'].iloc[-EARLY_RETEST_MAX_BARS:]
-    ret_up = bos_up and bool((lows <= hi).any()) and bool(closes.iloc[-1] > hi)
-    ret_dn = bos_dn and bool((highs >= lo).any()) and bool(closes.iloc[-1] < lo)
-    # EMA-Stack
+    bos_dn, lvl_dn = bos_breakdown(df5, EARLY_BOS_LOOKBACK)
+    bos_up, lvl_up = bos_breakup(df5, EARLY_BOS_LOOKBACK)
+    ret_dn = bos_dn and retest_happened(df5, lvl_dn, "SHORT", EARLY_RETEST_MAX_BARS)
+    ret_up = bos_up and retest_happened(df5, lvl_up, "LONG",  EARLY_RETEST_MAX_BARS)
     ema50_  = ta.ema(df5.close, 50).iloc[-1]
     ema100_ = ta.ema(df5.close, 100).iloc[-1]
-    stack_up = bool(c.iloc[-1] > ema50_ > ema100_)
     stack_dn = bool(c.iloc[-1] < ema50_ < ema100_)
-    # Micro-Fib
-    micro_ok_long  = micro_fib_ok(df5, "LONG")
-    micro_ok_short = micro_fib_ok(df5, "SHORT")
+    stack_up = bool(c.iloc[-1] > ema50_ > ema100_)
 
-    dir_short = vol_ok and bear_abs and ret_dn and stack_dn and micro_ok_short
-    dir_long  = vol_ok and bull_abs and ret_up and stack_up and micro_ok_long
+    dir_short = vol_ok and bear_abs and ret_dn and stack_dn and micro_fib_ok(df5, "SHORT")
+    dir_long  = vol_ok and bull_abs and ret_up and stack_up and micro_fib_ok(df5, "LONG")
 
     cons = {
         "vol": vol_ok,
@@ -549,25 +517,26 @@ def early_confluence(df5: pd.DataFrame) -> Tuple[str | None, int, Dict[str,bool]
         "bos_retest_long":  ret_up,
         "ema_stack_short":  stack_dn,
         "ema_stack_long":   stack_up,
-        "micro_fib_short":  micro_ok_short,
-        "micro_fib_long":   micro_ok_long,
+        "micro_fib_short":  micro_fib_ok(df5, "SHORT"),
+        "micro_fib_long":   micro_fib_ok(df5, "LONG"),
     }
 
     if dir_short:
         score = sum([cons["vol"], bear_abs, ret_dn, stack_dn, cons["micro_fib_short"]])
-        return "SHORT", score, cons, lo
+        return "SHORT", score, cons, lvl_dn
     if dir_long:
         score = sum([cons["vol"], bull_abs, ret_up, stack_up, cons["micro_fib_long"]])
-        return "LONG", score, cons, hi
+        return "LONG", score, cons, lvl_up
     return None, 0, cons, 0.0
 
-# ====== Messaging (kompakt vs. ausführlich) ======
-async def send_trade_signal(symbol: str, tf: str, direction: str,
-                            entry: float, sl: float, tp1: float, tp2: float, tp3: float | None,
-                            prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
+# ====== Messaging ======
+async def send_signal(symbol: str, tf: str, direction: str,
+                      entry: float, sl: float, tp1: float, tp2: float, tp3: float | None,
+                      prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
+
     if COMPACT_SIGNALS:
         lines = [
-            f"🛡 *STRICT ≥80%* — {symbol} {tf}",
+            f"🛡 *LOCKER ≥70%* — {symbol} {tf}",
             f"➡️ *{direction}*",
             f"🎯 Entry: `{entry}`",
             f"🏁 TP1: `{tp1}`",
@@ -583,7 +552,7 @@ async def send_trade_signal(symbol: str, tf: str, direction: str,
         if checklist_warn: checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
         sr_note = "S/R 15m/1h/4h" if used_sr else "ATR-Fallback"
         text = (
-            f"🛡 *STRICT ≥80%* — Signal {symbol} {tf}\n"
+            f"🛡 *LOCKER ≥70%* — Signal {symbol} {tf}\n"
             f"➡️ *{direction}*  ({sr_note})\n"
             f"🎯 Entry: `{entry}`\n"
             f"🛡 SL: `{sl}`\n"
@@ -605,6 +574,22 @@ async def send_early_signal(symbol: str, tf: str, direction: str, ref_level: flo
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
+async def send_mode_banner():
+    vol_line = "• Volumen-Spike: Bonus (kein KO)" if not REQUIRE_VOL_SPIKE else f"• Volumen-Spike: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20"
+    safe_line = "• Safe-Entry (Fib 0.5–0.618, 15m): optional, mit Vol-Bestätigung als Bonus" if not SAFE_ENTRY_REQUIRED else "• Safe-Entry (Fib 0.5–0.618, 15m): Pflicht + Vol-Bestätigung"
+    text = (
+        "🛡 *Scanner gestartet – MODUS: LOCKER (≥70%) + S/R-Ziele*\n"
+        f"• Scan alle 15 Minuten\n"
+        f"{safe_line}\n"
+        f"{vol_line}\n"
+        "• HTF strikt aligned (15m/1h/4h)\n"
+        f"• ATR%-Schwelle aktiv (≥ {MIN_ATR_PCT:.2f}%)\n"
+        f"• Wahrscheinlichkeit ≥ {PROB_MIN}%\n"
+        "• TP1=15m, TP2=1h, TP3=4h (sofern vorhanden). Fallback: ATR (weiter entfernte TP2/TP3)\n"
+        "• Early-STRIKT: BOS+Retest+Vol+EMA-Stack (+Micro-Fib) — eigene Meldung\n"
+    )
+    await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
+
 # ====== Scan ======
 async def scan_once():
     global last_scan_report
@@ -614,7 +599,7 @@ async def scan_once():
 
     for sym in SYMBOLS:
         try:
-            # 24h-Mute (nur Hauptsignal)
+            # 24h-Mute pro Coin (nur Hauptsignal)
             muted, rest = is_daily_muted(sym, now)
             if muted:
                 hrs = int(rest // 3600); mins = int((rest % 3600) // 60)
@@ -626,22 +611,23 @@ async def scan_once():
             df5  = fetch_df(sym, TF_TRIGGER)
             trig = analyze_trigger(df5)
 
-            # Frühwarnung (Early-STRIKT)
+            # === Early-STRIKT (optionaler Vorab-Ping, 24h-Mute-unabhängig) ===
             if EARLY_WARN_ENABLED and EARLY_STRICT_MODE:
                 ew_dir, ew_score, ew_cons, ew_level = early_confluence(df5)
-                if ew_dir and (ew_score >= 4):  # 4–5 Confluences ~ CL3
-                    # HTF-Alignment prüfen
+                if ew_dir and (ew_score >= 4):  # CL3-Niveau (4–5 Confluences)
+                    # HTF-Alignment wie beim Hauptsignal
                     up_all, dn_all = True, True
                     for tf in TF_FILTERS:
                         df_tf = fetch_df(sym, tf)
                         up, dn, _ = compute_trend_ok(df_tf)
                         up_all &= up; dn_all &= dn
                         time.sleep(ex.rateLimit/1000)
-                    if (up_all if ew_dir=="LONG" else dn_all):
+                    htf_ok = (up_all if ew_dir=="LONG" else dn_all)
+                    if htf_ok:
                         prob = prob_score(ew_dir=="LONG", ew_dir=="SHORT", True, True, True)
                         if ew_score >= 5: prob = min(prob+5, 90)
                         if prob >= EARLY_PROB_MIN:
-                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT"}
+                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT"
                             if not need_early_throttle(ekey, now, EARLY_COOLDOWN_S):
                                 tags = []
                                 if ew_cons["vol"]: tags.append("Vol OK")
@@ -655,7 +641,7 @@ async def scan_once():
                                     tags.append("Micro-Fib")
                                 await send_early_signal(sym, TF_TRIGGER, ew_dir, ew_level, prob, tags)
 
-            # Safe-Entry (15m, letzte geschlossene Kerze)
+            # Safe-Entry (Fib) auf 15m – nur geschlossene Kerze
             df_safe = fetch_df(sym, SAFE_ENTRY_TF)
             df_safe_closed = df_safe.iloc[:-1] if len(df_safe) > 1 else df_safe
             imp = last_impulse(df_safe_closed)
@@ -670,7 +656,7 @@ async def scan_once():
 
                 # Volumen-Bestätigung (15m)
                 v = df_safe_closed["volume"]
-                v_ma = ta.sma(v, 20)
+                v_ma = vol_sma(v, 20)
                 v_last, v_prev = float(v.iloc[-1]), float(v.iloc[-2])
                 vma_last = float(v_ma.iloc[-1]) if not math.isnan(v_ma.iloc[-1]) else 0.0
                 vol_conf = (v_last > ENTRY_VOL_FACTOR * max(vma_last, 1e-12)) and (v_last > v_prev)
@@ -681,7 +667,7 @@ async def scan_once():
                 safe_ok_long  = bool(long_ok  and (not REQUIRE_ENTRY_VOL or entry_vol_long_ok))
                 safe_ok_short = bool(short_ok and (not REQUIRE_ENTRY_VOL or entry_vol_short_ok))
 
-            # HTF-Filter (15m/1h/4h)
+            # Trendfilter Hauptsignal
             up_all, dn_all = True, True
             for tf in TF_FILTERS:
                 df_tf = fetch_df(sym, tf)
@@ -690,7 +676,7 @@ async def scan_once():
                 dn_all &= dn
                 time.sleep(ex.rateLimit/1000)
 
-            # Richtung bewerten (STRICT-Checklist)
+            # Richtung(en) prüfen
             passes = []
             for direction in ("LONG","SHORT"):
                 passed, ok_tags, warn_tags = build_checklist_for_dir(
@@ -708,20 +694,6 @@ async def scan_once():
                     entry, sl, tp1, tp2, maybe_tp3, used_sr = make_levels_sr_mtf(
                         sym, direction, trig["price"], trig["atr"]
                     )
-
-                    # 🔥 Heatmap-Check (Orderbook MEXC)
-                    hm_ok, hm_warn = heatmap_check(sym, entry, direction, tp1, tp2)
-                    ok_tags.extend(hm_ok)
-                    warn_tags.extend(hm_warn)
-
-                    # BLOCK: Entry nahe Orderwall → Signal verwerfen (nur Report)
-                    blocked = HEATMAP_BLOCK_ENTRY and any("Entry nahe Orderwall" in w for w in hm_warn)
-                    if blocked:
-                        last_scan_report["symbols"][sym] = {"skip": "Heatmap-Block (Entry nahe Orderwall)", "ok": ok_tags, "warn": warn_tags}
-                        time.sleep(ex.rateLimit/1000)
-                        continue
-
-                    # Throttle + Report
                     key = f"{sym}:{direction}"
                     throttled = need_throttle(key, now)
 
@@ -733,10 +705,9 @@ async def scan_once():
                         "safe_entry": (safe_ok_long if direction=="LONG" else safe_ok_short),
                         "entry_vol_conf": (entry_vol_long_ok if direction=="LONG" else entry_vol_short_ok),
                     }
-
                     if not throttled:
-                        await send_trade_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, maybe_tp3,
-                                               prob, ok_tags, warn_tags, used_sr)
+                        await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, maybe_tp3,
+                                          prob, ok_tags, warn_tags, used_sr)
                         daily_mute[sym] = now
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"prob {prob}% < {PROB_MIN}%"}
@@ -763,7 +734,27 @@ async def _startup():
 
 @app.get("/")
 async def root():
-    return {"ok": True, "mode": "strict_sr_min80"}
+    return {
+        "ok": True,
+        "mode": "locker_sr_min70",
+        "symbols": SYMBOLS,
+        "trigger_tf": TF_TRIGGER,
+        "filters": TF_FILTERS,
+        "scan_interval_s": SCAN_INTERVAL_S,
+        "sr_tps": {"tp1": SR_TF_TP1, "tp2": SR_TF_TP2, "tp3": SR_TF_TP3},
+        "entry_vol_factor": ENTRY_VOL_FACTOR,
+        "flags": {
+            "safe_entry_required": SAFE_ENTRY_REQUIRED,
+            "require_vol_spike": REQUIRE_VOL_SPIKE,
+            "prob_min": PROB_MIN
+        },
+        "early": {
+            "enabled": EARLY_WARN_ENABLED,
+            "strict": EARLY_STRICT_MODE,
+            "vol_factor": EARLY_VOL_FACTOR
+        },
+        "info": "Background scanner active. TradingView not required."
+    }
 
 @app.get("/scan")
 async def manual_scan():
@@ -772,9 +763,13 @@ async def manual_scan():
 
 @app.get("/status")
 async def status():
-    return {"ok": True, "mode": "strict_sr_min80", "report": last_scan_report}
+    return {"ok": True, "mode": "locker_sr_min70", "report": last_scan_report}
 
 @app.get("/test")
 async def test():
-    await bot.send_message(chat_id=TG_CHAT_ID, text="✅ Test: Bot läuft im STRICT-Modus mit Heatmap-Block", parse_mode="Markdown")
-    return {"ok": True}
+    text = (
+        "✅ Test: Bot & Telegram OK — Mode: *LOCKER (≥70%) + S/R*, "
+        f"Safe-Entry optional, Vol-Spike Bonus, Scan: alle 15 Min."
+    )
+    await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
+    return {"ok": True, "test": True, "mode": "locker_sr_min70"}
