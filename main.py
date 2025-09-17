@@ -1,7 +1,7 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
-# STRIKT + Safe-Entry (Fib 0.5–0.618 Pullback, 15m) + S/R-Ziele (15m/1h/4h) + Scan alle 15 min
-# + Neu: Safe-Entry NUR mit 15m Volumen-Bestätigung (Entry-Volumenfilter)
-# + Neu: Early-STRIKT (BOS+Retest, Vol>MA, EMA-Stack, Micro-Fib) als Frühwarnung – optional
+# MODE: Locker, aber ≥70% — Safe-Entry optional (mit Volumen-Bestätigung), Volumen-Spike nur Bonus, PROB_MIN=70
+# S/R-Ziele (15m/1h/4h), Scan alle 15 Minuten
+# Early-STRIKT (BOS+Retest, EMA-Stack, Micro-Fib) bleibt aktiv
 
 import os, asyncio, time, math
 from datetime import datetime, timezone
@@ -48,15 +48,15 @@ LOOKBACK = 300
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
 # ====== Safe-Entry (Pullback in Fib-Zone auf 15m) ======
-SAFE_ENTRY_REQUIRED = True         # Safe-Entry ist KO-Kriterium
+SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriterium
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
 FIB_TOL_PCT = 0.10 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
-# >>> NEU: Volumen-Bestätigung direkt am Safe-Entry (15m)
+# Volumen-Bestätigung direkt am Safe-Entry (15m)
 ENTRY_VOL_FACTOR = 1.15            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
-REQUIRE_ENTRY_VOL = True           # wenn True, wird Safe-Entry nur mit Volumen bestätigt
+REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestätigung (Qualitätsanker)
 
 # ====== S/R (Timeframes für TPs & SL) ======
 SR_TF_TP1 = "15m"                  # TP1 aus 15m
@@ -74,11 +74,11 @@ TP1_ATR = 1.0
 TP2_ATR = 2.2
 TP3_ATR = 3.4
 
-# ====== STRIKTE Checklisten-Settings ======
+# ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.20
 VOL_SPIKE_FACTOR   = 1.30
-REQUIRE_VOL_SPIKE  = True
-PROB_MIN           = 60
+REQUIRE_VOL_SPIKE  = False         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
+PROB_MIN           = 70            # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 300
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
@@ -88,14 +88,14 @@ DAILY_SILENCE_S    = 24 * 60 * 60
 COMPACT_SIGNALS = True
 
 # ====== Early-STRIKT (optional, gleiche Qualität wie Hauptsignal) ======
-EARLY_WARN_ENABLED     = True    # auf True stellen, wenn Frühwarnungen gewünscht sind
-EARLY_STRICT_MODE      = True      # behält hohe Qualität (CL3)
-EARLY_COOLDOWN_S       = 180       # separater Cooldown für Early
-EARLY_PROB_MIN         = 60        # gleich wie PROB_MIN
-EARLY_VOL_FACTOR       = 1.15      # Volumenfaktor für Early
-EARLY_WICK_MIN_PCT     = 35.0      # Min. Wick-% (Absorption)
-EARLY_BOS_LOOKBACK     = 30        # Swing-Suche (Bars)
-EARLY_RETEST_MAX_BARS  = 6         # Retest-Fenster
+EARLY_WARN_ENABLED     = True
+EARLY_STRICT_MODE      = True
+EARLY_COOLDOWN_S       = 180
+EARLY_PROB_MIN         = 60
+EARLY_VOL_FACTOR       = 1.15
+EARLY_WICK_MIN_PCT     = 35.0
+EARLY_BOS_LOOKBACK     = 30
+EARLY_RETEST_MAX_BARS  = 6
 
 # Micro-Fib (5m) Qualität des ersten Pullbacks nach BOS
 MICRO_FIB_ENABLED      = True
@@ -108,7 +108,7 @@ if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
 bot = Bot(token=TG_TOKEN)
-app = FastAPI(title="MEXC Auto Scanner → Telegram (STRIKT + Safe-Entry + S/R)")
+app = FastAPI(title="MEXC Auto Scanner → Telegram (Locker ≥70% + S/R)")
 ex = ccxt.mexc({"enableRateLimit": True})
 
 last_signal: Dict[str, float] = {}
@@ -332,41 +332,58 @@ def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -
         tp3 = round(entry - TP3_ATR * atrv, 6)
     return entry, sl, tp1, tp2, tp3, False
 
-# ====== Checkliste (streng) ======
+# ====== Checkliste (gelockert, ≥70%) ======
 def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, dn_all: bool,
                             safe_ok_long: bool, safe_ok_short: bool) -> Tuple[bool, List[str], List[str]]:
     ok, warn = [], []
 
+    # ATR-Volatilität als KO
     atr_pct = (trig["atr"] / max(trig["price"], 1e-9)) * 100.0
     if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
     else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
+    # HTF-Alignment (KO)
     if (up_all if direction=="LONG" else dn_all): ok.append("HTF align (15m/1h/4h)")
     else:                                         return (False, ok, ["HTF nicht aligned"])
 
+    # Bias durch Engulf oder EMA-Stack (KO)
     bias_ok = (trig["bull"] or trig["long_fast"]) if direction=="LONG" else (trig["bear"] or trig["short_fast"])
     if bias_ok: ok.append("Engulf/EMA-Stack")
     else:       return (False, ok, ["Kein Engulf/EMA-Stack"])
 
+    # EMA200 in Richtung (KO)
     ema200_ok = trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"]
     if ema200_ok: ok.append("EMA200 ok")
     else:         return (False, ok, ["EMA200 gegen Setup"])
 
-    if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
-    else:              return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
+    # Volumen-Spike: nur Pflicht wenn REQUIRE_VOL_SPIKE=True, sonst Bonus
+    if REQUIRE_VOL_SPIKE:
+        if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
+        else:              return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
+    else:
+        if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Bonus)")
+        else:              warn.append("Vol normal (kein Spike)")
 
+    # Safe-Entry (Fib 0.5–0.618 + optional Vol-Bestätigung): nur Pflicht wenn SAFE_ENTRY_REQUIRED=True
     if SAFE_ENTRY_REQUIRED:
         safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
         if safe_ok:
             ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
         else:
             return (False, ok, [f"Kein Safe-Entry mit Vol-Bestätigung ({SAFE_ENTRY_TF})"])
+    else:
+        safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
+        if safe_ok:
+            ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
+        else:
+            warn.append(f"Kein Safe-Entry ({SAFE_ENTRY_TF})")
 
+    # RSI nur als Hinweis
     if direction=="LONG":
-        if trig["rsi"] > 67: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
+        if trig["rsi"] > 70: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
         else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
     else:
-        if trig["rsi"] < 33: warn.append(f"RSI tief ({trig['rsi']:.1f})")
+        if trig["rsi"] < 30: warn.append(f"RSI tief ({trig['rsi']:.1f})")
         else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
 
     return (True, ok, warn)
@@ -519,7 +536,7 @@ async def send_signal(symbol: str, tf: str, direction: str,
 
     if COMPACT_SIGNALS:
         lines = [
-            f"🛡 *STRIKT* — {symbol} {tf}",
+            f"🛡 *LOCKER ≥70%* — {symbol} {tf}",
             f"➡️ *{direction}*",
             f"🎯 Entry: `{entry}`",
             f"🏁 TP1: `{tp1}`",
@@ -535,7 +552,7 @@ async def send_signal(symbol: str, tf: str, direction: str,
         if checklist_warn: checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
         sr_note = "S/R 15m/1h/4h" if used_sr else "ATR-Fallback"
         text = (
-            f"🛡 *STRIKT* — Signal {symbol} {tf}\n"
+            f"🛡 *LOCKER ≥70%* — Signal {symbol} {tf}\n"
             f"➡️ *{direction}*  ({sr_note})\n"
             f"🎯 Entry: `{entry}`\n"
             f"🛡 SL: `{sl}`\n"
@@ -558,17 +575,18 @@ async def send_early_signal(symbol: str, tf: str, direction: str, ref_level: flo
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
 async def send_mode_banner():
+    vol_line = "• Volumen-Spike: Bonus (kein KO)" if not REQUIRE_VOL_SPIKE else f"• Volumen-Spike: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20"
+    safe_line = "• Safe-Entry (Fib 0.5–0.618, 15m): optional, mit Vol-Bestätigung als Bonus" if not SAFE_ENTRY_REQUIRED else "• Safe-Entry (Fib 0.5–0.618, 15m): Pflicht + Vol-Bestätigung"
     text = (
-        "🛡 *Scanner gestartet – MODUS: STRENG + Safe-Entry + S/R-Ziele*\n"
+        "🛡 *Scanner gestartet – MODUS: LOCKER (≥70%) + S/R-Ziele*\n"
         f"• Scan alle 15 Minuten\n"
-        f"• Safe-Entry: Pullback in Fib 0.5–0.618 ({SAFE_ENTRY_TF}) — Pflicht\n"
-        f"• + Volumen-Bestätigung am Safe-Entry: Vol>{ENTRY_VOL_FACTOR:.2f}×MA20 & > Vor-Kerze\n"
+        f"{safe_line}\n"
+        f"{vol_line}\n"
         "• HTF strikt aligned (15m/1h/4h)\n"
-        f"• Volumen (Trigger-TF): Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20\n"
         f"• ATR%-Schwelle aktiv (≥ {MIN_ATR_PCT:.2f}%)\n"
         f"• Wahrscheinlichkeit ≥ {PROB_MIN}%\n"
         "• TP1=15m, TP2=1h, TP3=4h (sofern vorhanden). Fallback: ATR (weiter entfernte TP2/TP3)\n"
-        f"• Early-STRIKT (optional): BOS+Retest+Vol+EMA-Stack (+Micro-Fib) — eigene Meldung\n"
+        "• Early-STRIKT: BOS+Retest+Vol+EMA-Stack (+Micro-Fib) — eigene Meldung\n"
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
@@ -718,13 +736,18 @@ async def _startup():
 async def root():
     return {
         "ok": True,
-        "mode": "streng_sr_safe",
+        "mode": "locker_sr_min70",
         "symbols": SYMBOLS,
         "trigger_tf": TF_TRIGGER,
         "filters": TF_FILTERS,
         "scan_interval_s": SCAN_INTERVAL_S,
         "sr_tps": {"tp1": SR_TF_TP1, "tp2": SR_TF_TP2, "tp3": SR_TF_TP3},
         "entry_vol_factor": ENTRY_VOL_FACTOR,
+        "flags": {
+            "safe_entry_required": SAFE_ENTRY_REQUIRED,
+            "require_vol_spike": REQUIRE_VOL_SPIKE,
+            "prob_min": PROB_MIN
+        },
         "early": {
             "enabled": EARLY_WARN_ENABLED,
             "strict": EARLY_STRICT_MODE,
@@ -740,10 +763,13 @@ async def manual_scan():
 
 @app.get("/status")
 async def status():
-    return {"ok": True, "mode": "streng_sr_safe", "report": last_scan_report}
+    return {"ok": True, "mode": "locker_sr_min70", "report": last_scan_report}
 
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: *STRENG + Safe-Entry (Fib 15m + Vol) + S/R (15m/1h/4h)*, Scan: alle 15 Min."
+    text = (
+        "✅ Test: Bot & Telegram OK — Mode: *LOCKER (≥70%) + S/R*, "
+        f"Safe-Entry optional, Vol-Spike Bonus, Scan: alle 15 Min."
+    )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
-    return {"ok": True, "test": True, "mode": "streng_sr_safe"}
+    return {"ok": True, "test": True, "mode": "locker_sr_min70"}
