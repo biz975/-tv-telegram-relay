@@ -90,6 +90,10 @@ TP1_ATR = 1.2
 TP2_ATR = 2.4
 TP3_ATR = 3.6
 
+# --- TP-Abstandsregeln ---
+TP1_MIN_ATR = 1.0          # TP1 muss >= 1.0 × ATR vom Entry entfernt sein
+PREFER_1H_IF_CLOSE = True  # wenn 15m-Level zu nah, nimm 1h als TP1
+
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.40
 VOL_SPIKE_FACTOR   = 1.5
@@ -384,37 +388,81 @@ def get_sr_levels(symbol: str, timeframe: str) -> Tuple[List[Tuple[float,int]], 
     return find_pivots_levels(df)
 
 def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -> Tuple[float,float,float,float,float,bool]:
+    # Level sammeln
     res_15, sup_15 = get_sr_levels(symbol, SR_TF_TP1)
     res_1h, sup_1h = get_sr_levels(symbol, SR_TF_TP2)
     res_4h, sup_4h = get_sr_levels(symbol, SR_TF_TP3)
 
-    if direction == "LONG":
-        tp1 = nearest_level(res_15, entry, "LONG", MIN_STRENGTH)
-        sl  = nearest_level(sup_15, entry, "SHORT", MIN_STRENGTH)
-        if tp1 is not None and sl is not None and tp1 > entry and sl < entry:
-            tp2 = nearest_level(res_1h, tp1, "LONG", MIN_STRENGTH)
-            if tp2 is None:
-                tp2 = round(entry + (tp1 - entry) * TP2_FACTOR, 6)
-            tp3 = nearest_level(res_4h, tp2, "LONG", MIN_STRENGTH)
-            return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 is not None else None), True
-    else:
-        tp1 = nearest_level(sup_15, entry, "SHORT", MIN_STRENGTH)
-        sl  = nearest_level(res_15, entry, "LONG", MIN_STRENGTH)
-        if tp1 is not None and sl is not None and tp1 < entry and sl > entry:
-            tp2 = nearest_level(sup_1h, tp1, "SHORT", MIN_STRENGTH)
-            if tp2 is None:
-                tp2 = round(entry - (entry - tp1) * TP2_FACTOR, 6)
-            tp3 = nearest_level(sup_4h, tp2, "SHORT", MIN_STRENGTH)
-            return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 is not None else None), True
+    def candidates_above(levels: List[Tuple[float,int]], ref: float, min_strength: int) -> List[float]:
+        return sorted([p for (p,s) in levels if s >= min_strength and p > ref])
+
+    def candidates_below(levels: List[Tuple[float,int]], ref: float, min_strength: int) -> List[float]:
+        return sorted([p for (p,s) in levels if s >= min_strength and p < ref], reverse=True)
+
+    used_sr = False
 
     if direction == "LONG":
+        # Kandidatenliste aufbauen
+        c15 = candidates_above(res_15, entry, MIN_STRENGTH)
+        c1h = candidates_above(res_1h, entry, MIN_STRENGTH)
+        c4h = candidates_above(res_4h, entry, MIN_STRENGTH)
+
+        # wähle TP1 aus 15m, aber nicht zu nah
+        tp1 = c15[0] if c15 else None
+        if tp1 is not None and (tp1 - entry) < TP1_MIN_ATR * atrv and PREFER_1H_IF_CLOSE:
+            # nimm direkt das nächste 1h-Level als TP1
+            tp1 = c1h[0] if c1h else tp1
+
+        # falls 15m-TP1 immer noch zu nah, versuche nächstes 15m-Cluster
+        i = 0
+        while tp1 is not None and (tp1 - entry) < TP1_MIN_ATR * atrv and i+1 < len(c15):
+            i += 1
+            tp1 = c15[i]
+
+        # SL von 15m-Support
+        sl_list = candidates_below(sup_15, entry, MIN_STRENGTH)
+        sl = sl_list[0] if sl_list else None
+
+        if tp1 is not None and sl is not None and tp1 > entry and sl < entry:
+            used_sr = True
+            # TP2: 1h oder ATR-Faktor
+            tp2 = c1h[0] if c1h and c1h[0] > tp1 else round(entry + (tp1 - entry) * TP2_FACTOR, 6)
+            # TP3: 4h optional
+            tp3 = c4h[0] if c4h and c4h[0] > tp2 else None
+            return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 else None), used_sr
+
+    else:  # SHORT
+        c15 = candidates_below(sup_15, entry, MIN_STRENGTH)
+        c1h = candidates_below(sup_1h, entry, MIN_STRENGTH)
+        c4h = candidates_below(sup_4h, entry, MIN_STRENGTH)
+
+        tp1 = c15[0] if c15 else None
+        if tp1 is not None and (entry - tp1) < TP1_MIN_ATR * atrv and PREFER_1H_IF_CLOSE:
+            tp1 = c1h[0] if c1h else tp1
+
+        i = 0
+        while tp1 is not None and (entry - tp1) < TP1_MIN_ATR * atrv and i+1 < len(c15):
+            i += 1
+            tp1 = c15[i]
+
+        sl_list = candidates_above(res_15, entry, MIN_STRENGTH)
+        sl = sl_list[0] if sl_list else None
+
+        if tp1 is not None and sl is not None and tp1 < entry and sl > entry:
+            used_sr = True
+            tp2 = c1h[0] if c1h and c1h[0] < tp1 else round(entry - (entry - tp1) * TP2_FACTOR, 6)
+            tp3 = c4h[0] if c4h and c4h[0] < tp2 else None
+            return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 else None), used_sr
+
+    # --- ATR Fallback ---
+    if direction == "LONG":
         sl  = round(entry - ATR_SL  * atrv, 6)
-        tp1 = round(entry + TP1_ATR * atrv, 6)
+        tp1 = round(entry + max(TP1_ATR, TP1_MIN_ATR) * atrv, 6)
         tp2 = round(entry + TP2_ATR * atrv, 6)
         tp3 = round(entry + TP3_ATR * atrv, 6)
     else:
         sl  = round(entry + ATR_SL  * atrv, 6)
-        tp1 = round(entry - TP1_ATR * atrv, 6)
+        tp1 = round(entry - max(TP1_ATR, TP1_MIN_ATR) * atrv, 6)
         tp2 = round(entry - TP2_ATR * atrv, 6)
         tp3 = round(entry - TP3_ATR * atrv, 6)
     return entry, sl, tp1, tp2, tp3, False
