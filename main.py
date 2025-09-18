@@ -66,7 +66,7 @@ PIVOT_LEFT = 3                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 3
 CLUSTER_PCT = 0.15 / 100.0         # Cluster-Toleranz (±0.15 %)
 MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
-TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
+TP2_FACTOR = 1.50                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.5
