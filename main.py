@@ -92,10 +92,10 @@ TP3_ATR = 3.5
 
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.40
-VOL_SPIKE_FACTOR   = 1.7
+VOL_SPIKE_FACTOR   = 1.6
 REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
 PROB_MIN           = 86            # <— Mindestens 70% Wahrscheinlichkeit
-COOLDOWN_S         = 1800
+COOLDOWN_S         = 1200
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
 DAILY_SILENCE_S    = 24 * 60 * 60
@@ -107,7 +107,7 @@ COMPACT_SIGNALS = True
 EARLY_WARN_ENABLED     = True
 EARLY_STRICT_MODE      = True
 EARLY_COOLDOWN_S       = 300
-EARLY_PROB_MIN         = 70
+EARLY_PROB_MIN         = 84
 EARLY_VOL_FACTOR       = 1.40
 EARLY_WICK_MIN_PCT     = 45.0
 EARLY_BOS_LOOKBACK     = 30
@@ -127,8 +127,8 @@ HEATMAP_LIMIT:   int  = 1000        # Tiefe des Orderbuchs
 HEATMAP_BIN_PCT: float = 0.02/100.0 # Preis-Bin-Größe (z.B. 0.02%)
 HEATMAP_TOP_N:   int  = 5           # Top-N Bins je Seite
 HEATMAP_NEAR_PCT:float = 0.05/100.0 # „nahe“ = ±0.05% vom Entry
-HEATMAP_BONUS_STRONG: int = 4       # Bonus % wenn nahe Wall stark ist
-HEATMAP_BONUS_WEAK:   int = 2       # Bonus % wenn nahe Wall schwächer ist
+HEATMAP_BONUS_STRONG: int = 6       # Bonus % wenn nahe Wall stark ist
+HEATMAP_BONUS_WEAK:   int = 3       # Bonus % wenn nahe Wall schwächer ist
 
 def _calc_notional(price: float, qty: float) -> float:
     try:
