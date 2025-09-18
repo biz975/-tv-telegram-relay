@@ -60,7 +60,7 @@ SYMBOLS = [
 # ====== Analyse & Scan ======
 TF_TRIGGER = "5m"                  # Signal-TF (Bias/Vol/RSI/EMAs)
 TF_FILTERS = ["15m","1h","4h"]     # Trendfilter (streng)
-LOOKBACK = 300
+LOOKBACK = 500
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
 # ====== Safe-Entry (Pullback in Fib-Zone auf 15m) ======
@@ -80,15 +80,15 @@ SR_TF_TP2 = "1h"                   # TP2 aus 1h (wenn möglich)
 SR_TF_TP3 = "4h"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 3                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 3
-CLUSTER_PCT = 0.15 / 100.0         # Cluster-Toleranz (±0.15 %)
-MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
+CLUSTER_PCT = 0.25 / 100.0         # Cluster-Toleranz (±0.15 %)
+MIN_STRENGTH = 2                   # min. Anzahl an Swings für „starkes“ Level
 TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.7
 TP1_ATR = 1.2
-TP2_ATR = 2.3
-TP3_ATR = 3.5
+TP2_ATR = 2.4
+TP3_ATR = 3.6
 
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.40
