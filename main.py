@@ -66,7 +66,7 @@ PIVOT_LEFT = 3                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 3
 CLUSTER_PCT = 0.15 / 100.0         # Cluster-Toleranz (±0.15 %)
 MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
-TP2_FACTOR = 1.50                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
+TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.5
@@ -102,6 +102,77 @@ MICRO_FIB_ENABLED      = True
 MICRO_FIB_TOL_PCT      = 0.15 / 100.0
 MICRO_FIB_PIVOT_L      = 2
 MICRO_FIB_PIVOT_R      = 2
+
+# ====== HEATMAP START ======
+# Orderbook-Heatmap (MEXC gratis, REST via ccxt)
+HEATMAP_ENABLED: bool = True        # Daten erfassen (REST via ccxt)
+HEATMAP_USE_IN_ANALYSIS: bool = True  # Heatmap in Probability/Checkliste einfließen lassen
+HEATMAP_LIMIT:   int  = 1000        # Tiefe des Orderbuchs
+HEATMAP_BIN_PCT: float = 0.02/100.0 # Preis-Bin-Größe (z.B. 0.02%)
+HEATMAP_TOP_N:   int  = 5           # Top-N Bins je Seite
+HEATMAP_NEAR_PCT:float = 0.05/100.0 # „nahe“ = ±0.05% vom Entry
+HEATMAP_BONUS_STRONG: int = 7       # Bonus % wenn nahe Wall stark ist
+HEATMAP_BONUS_WEAK:   int = 3       # Bonus % wenn nahe Wall schwächer ist
+
+def _calc_notional(price: float, qty: float) -> float:
+    try:
+        return float(price) * float(qty)
+    except Exception:
+        return 0.0
+
+def fetch_orderbook(symbol: str, limit: int = HEATMAP_LIMIT) -> Dict[str, List[Tuple[float, float, float]]]:
+    """Holt das MEXC-Orderbuch via ccxt und gibt Listen von (price, qty, notional) für bids/asks zurück."""
+    ob = ex.fetch_order_book(symbol, limit=limit)
+    bids_raw = ob.get("bids", [])
+    asks_raw = ob.get("asks", [])
+    bids = [(float(p), float(q), _calc_notional(p, q)) for p, q in bids_raw]
+    asks = [(float(p), float(q), _calc_notional(p, q)) for p, q in asks_raw]
+    bids.sort(key=lambda x: x[0], reverse=True)
+    asks.sort(key=lambda x: x[0])
+    return {"bids": bids, "asks": asks}
+
+def _bin_key(p: float, bin_pct: float, anchor: float) -> float:
+    step = max(bin_pct * max(anchor, 1e-12), 1e-12)
+    offset = (p - anchor) / step
+    snapped = round(offset)
+    return round(anchor + snapped * step, 12)
+
+def aggregate_walls_binned(orderbook: Dict[str, List[Tuple[float, float, float]]],
+                           ref_price: float,
+                           bin_pct: float = HEATMAP_BIN_PCT) -> Dict[str, List[Tuple[float, float, float]]]:
+    out = {"bids": {}, "asks": {}}
+    for side in ("bids", "asks"):
+        for price, qty, notional in orderbook.get(side, []):
+            key = _bin_key(price, bin_pct, ref_price)
+            if key not in out[side]:
+                out[side][key] = [0.0, 0.0]
+            out[side][key][0] += qty
+            out[side][key][1] += notional
+
+    def _topn(d: Dict[float, List[float]], n: int) -> List[Tuple[float, float, float]]:
+        rows = [(k, v[0], v[1]) for k, v in d.items()]
+        rows.sort(key=lambda t: t[2], reverse=True)
+        return rows[:n]
+
+    return {"bids": _topn(out["bids"], HEATMAP_TOP_N), "asks": _topn(out["asks"], HEATMAP_TOP_N)}
+
+def nearest_walls(orderbook: Dict[str, List[Tuple[float, float, float]]],
+                  ref_price: float) -> Dict[str, Tuple[float, float, float] | None]:
+    nearest_bid = None
+    nearest_ask = None
+    bids_near = [(p,q,n) for (p,q,n) in orderbook.get("bids", []) if p <= ref_price]
+    asks_near = [(p,q,n) for (p,q,n) in orderbook.get("asks", []) if p >= ref_price]
+    if bids_near:
+        bids_near.sort(key=lambda t: (abs((ref_price - t[0]) / max(ref_price,1e-12)), -t[2]))
+        nearest_bid = bids_near[0]
+    if asks_near:
+        asks_near.sort(key=lambda t: (abs((t[0] - ref_price) / max(ref_price,1e-12)), -t[2]))
+        nearest_ask = asks_near[0]
+    return {"bid": nearest_bid, "ask": nearest_ask}
+
+def is_within_pct(level_price: float, ref_price: float, pct: float) -> bool:
+    return abs(level_price - ref_price) / max(ref_price, 1e-12) <= pct
+# ====== HEATMAP END ======
 
 # ====== Init ======
 if not TG_TOKEN or not TG_CHAT_ID:
@@ -356,7 +427,7 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     if ema200_ok: ok.append("EMA200 ok")
     else:         return (False, ok, ["EMA200 gegen Setup"])
 
-    # Volumen-Spike: nur Pflicht wenn REQUIRE_VOL_SPIKE=True, sonst Bonus
+    # Volumen-Spike: Pflicht/Bonus je Setting
     if REQUIRE_VOL_SPIKE:
         if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
         else:              return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
@@ -364,21 +435,17 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
         if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Bonus)")
         else:              warn.append("Vol normal (kein Spike)")
 
-    # Safe-Entry (Fib 0.5–0.618 + optional Vol-Bestätigung): nur Pflicht wenn SAFE_ENTRY_REQUIRED=True
+    # Safe-Entry (Fib 0.5–0.618)
     if SAFE_ENTRY_REQUIRED:
         safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
-        if safe_ok:
-            ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
-        else:
-            return (False, ok, [f"Kein Safe-Entry mit Vol-Bestätigung ({SAFE_ENTRY_TF})"])
+        if safe_ok: ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
+        else:       return (False, ok, [f"Kein Safe-Entry mit Vol-Bestätigung ({SAFE_ENTRY_TF})"])
     else:
         safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
-        if safe_ok:
-            ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
-        else:
-            warn.append(f"Kein Safe-Entry ({SAFE_ENTRY_TF})")
+        if safe_ok: ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
+        else:       warn.append(f"Kein Safe-Entry ({SAFE_ENTRY_TF})")
 
-    # RSI nur als Hinweis
+    # RSI Hinweis
     if direction=="LONG":
         if trig["rsi"] > 70: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
         else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
@@ -611,11 +678,35 @@ async def scan_once():
             df5  = fetch_df(sym, TF_TRIGGER)
             trig = analyze_trigger(df5)
 
+            # ====== HEATMAP START ======
+            # Heatmap-Daten holen und vorbereiten
+            heatmap_info = None
+            if HEATMAP_ENABLED:
+                try:
+                    ob   = fetch_orderbook(sym, HEATMAP_LIMIT)
+                    px   = float(trig["price"])
+                    topb = aggregate_walls_binned(ob, px, HEATMAP_BIN_PCT)
+                    near = nearest_walls(ob, px)
+                    near_bid = near["bid"]
+                    near_ask = near["ask"]
+                    heatmap_info = {
+                        "top_bins_bids": topb["bids"],
+                        "top_bins_asks": topb["asks"],
+                        "nearest_bid":   near_bid,
+                        "nearest_ask":   near_ask,
+                        "near_bid_flag": (bool(near_bid) and is_within_pct(near_bid[0], px, HEATMAP_NEAR_PCT)),
+                        "near_ask_flag": (bool(near_ask) and is_within_pct(near_ask[0], px, HEATMAP_NEAR_PCT)),
+                        "bin_pct":       HEATMAP_BIN_PCT,
+                        "near_pct":      HEATMAP_NEAR_PCT,
+                    }
+                except Exception as _he:
+                    heatmap_info = {"error": str(_he)}
+            # ====== HEATMAP END ======
+
             # === Early-STRIKT (optionaler Vorab-Ping, 24h-Mute-unabhängig) ===
             if EARLY_WARN_ENABLED and EARLY_STRICT_MODE:
                 ew_dir, ew_score, ew_cons, ew_level = early_confluence(df5)
                 if ew_dir and (ew_score >= 4):  # CL3-Niveau (4–5 Confluences)
-                    # HTF-Alignment wie beim Hauptsignal
                     up_all, dn_all = True, True
                     for tf in TF_FILTERS:
                         df_tf = fetch_df(sym, tf)
@@ -654,7 +745,6 @@ async def scan_once():
                 long_ok, _   = fib_zone_ok(price_safe, imp, "LONG")
                 short_ok, _  = fib_zone_ok(price_safe, imp, "SHORT")
 
-                # Volumen-Bestätigung (15m)
                 v = df_safe_closed["volume"]
                 v_ma = vol_sma(v, 20)
                 v_last, v_prev = float(v.iloc[-1]), float(v.iloc[-2])
@@ -686,10 +776,45 @@ async def scan_once():
                     prob = prob_score(direction=="LONG", direction=="SHORT",
                                       trig["vol_ok"], up_all or dn_all,
                                       trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"])
-                    passes.append((direction, prob, ok_tags, warn_tags))
+
+                    # ====== HEATMAP START ======
+                    hm_bonus = 0
+                    if HEATMAP_ENABLED and HEATMAP_USE_IN_ANALYSIS and heatmap_info and "error" not in heatmap_info:
+                        entry_ref = float(trig["price"])  # identisch zum Entry, der später übergeben wird
+                        if direction == "LONG":
+                            near_side = heatmap_info.get("nearest_bid")
+                            is_near   = bool(near_side and is_within_pct(near_side[0], entry_ref, HEATMAP_NEAR_PCT))
+                            max_notional = 0.0
+                            bids_bins = heatmap_info.get("top_bins_bids") or []
+                            if bids_bins:
+                                max_notional = max((n for (_p,_q,n) in bids_bins), default=0.0)
+                            if is_near:
+                                strong = (max_notional > 0 and near_side[2] >= 0.5 * max_notional)
+                                hm_bonus = HEATMAP_BONUS_STRONG if strong else HEATMAP_BONUS_WEAK
+                                ok_tags.append("HC: nahe Bid-Wall")
+                            else:
+                                warn_tags.append("HC: neutral")
+                        else:  # SHORT
+                            near_side = heatmap_info.get("nearest_ask")
+                            is_near   = bool(near_side and is_within_pct(near_side[0], entry_ref, HEATMAP_NEAR_PCT))
+                            max_notional = 0.0
+                            asks_bins = heatmap_info.get("top_bins_asks") or []
+                            if asks_bins:
+                                max_notional = max((n for (_p,_q,n) in asks_bins), default=0.0)
+                            if is_near:
+                                strong = (max_notional > 0 and near_side[2] >= 0.5 * max_notional)
+                                hm_bonus = HEATMAP_BONUS_STRONG if strong else HEATMAP_BONUS_WEAK
+                                ok_tags.append("HC: nahe Ask-Wall")
+                            else:
+                                warn_tags.append("HC: neutral")
+                        prob = min(prob + hm_bonus, 90)
+                    # ====== HEATMAP END ======
+
+                    passes.append((direction, prob, ok_tags, warn_tags, locals().get("hm_bonus", 0)))
 
             if passes:
-                direction, prob, ok_tags, warn_tags = sorted(passes, key=lambda x: x[1], reverse=True)[0]
+                # wähle Richtung mit höchster (ggf. angepasster) Prob.
+                direction, prob, ok_tags, warn_tags, hm_bonus_used = sorted(passes, key=lambda x: x[1], reverse=True)[0]
                 if prob >= PROB_MIN:
                     entry, sl, tp1, tp2, maybe_tp3, used_sr = make_levels_sr_mtf(
                         sym, direction, trig["price"], trig["atr"]
@@ -705,14 +830,34 @@ async def scan_once():
                         "safe_entry": (safe_ok_long if direction=="LONG" else safe_ok_short),
                         "entry_vol_conf": (entry_vol_long_ok if direction=="LONG" else entry_vol_short_ok),
                     }
+
+                    # ====== HEATMAP START ======
+                    if HEATMAP_ENABLED:
+                        last_scan_report["symbols"][sym]["heatmap"] = (heatmap_info or {}) | {"hm_bonus": hm_bonus_used}
+                        try:
+                            px = float(entry)
+                            near_bid = (heatmap_info or {}).get("nearest_bid")
+                            near_ask = (heatmap_info or {}).get("nearest_ask")
+                            mag_long  = bool(near_bid and is_within_pct(near_bid[0], px, HEATMAP_NEAR_PCT))
+                            mag_short = bool(near_ask and is_within_pct(near_ask[0], px, HEATMAP_NEAR_PCT))
+                            last_scan_report["symbols"][sym]["heatmap"]["magnet_near_entry_long"]  = mag_long
+                            last_scan_report["symbols"][sym]["heatmap"]["magnet_near_entry_short"] = mag_short
+                        except Exception:
+                            pass
+                    # ====== HEATMAP END ======
+
                     if not throttled:
                         await send_signal(sym, TF_TRIGGER, direction, entry, sl, tp1, tp2, maybe_tp3,
                                           prob, ok_tags, warn_tags, used_sr)
                         daily_mute[sym] = now
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"prob {prob}% < {PROB_MIN}%"}
+                    if HEATMAP_ENABLED and heatmap_info is not None:
+                        last_scan_report["symbols"][sym]["heatmap"] = heatmap_info
             else:
                 last_scan_report["symbols"][sym] = {"skip": "Checkliste nicht bestanden"}
+                if HEATMAP_ENABLED and heatmap_info is not None:
+                    last_scan_report["symbols"][sym]["heatmap"] = heatmap_info
 
         except Exception as e:
             last_scan_report["symbols"][sym] = {"error": str(e)}
@@ -753,6 +898,18 @@ async def root():
             "strict": EARLY_STRICT_MODE,
             "vol_factor": EARLY_VOL_FACTOR
         },
+        # ====== HEATMAP START ======
+        "heatmap": {
+            "enabled": HEATMAP_ENABLED,
+            "use_in_analysis": HEATMAP_USE_IN_ANALYSIS,
+            "limit": HEATMAP_LIMIT,
+            "bin_pct": HEATMAP_BIN_PCT,
+            "top_n": HEATMAP_TOP_N,
+            "near_pct": HEATMAP_NEAR_PCT,
+            "bonus_strong": HEATMAP_BONUS_STRONG,
+            "bonus_weak": HEATMAP_BONUS_WEAK
+        },
+        # ====== HEATMAP END ======
         "info": "Background scanner active. TradingView not required."
     }
 
