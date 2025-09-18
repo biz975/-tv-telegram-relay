@@ -85,17 +85,17 @@ MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Le
 TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
-ATR_SL  = 1.5
-TP1_ATR = 1.0
-TP2_ATR = 2.2
-TP3_ATR = 3.4
+ATR_SL  = 1.7
+TP1_ATR = 1.2
+TP2_ATR = 2.3
+TP3_ATR = 3.5
 
 # ====== Checklisten-Settings (gelockert) ======
-MIN_ATR_PCT        = 0.25
-VOL_SPIKE_FACTOR   = 1.50
+MIN_ATR_PCT        = 0.40
+VOL_SPIKE_FACTOR   = 1.7
 REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
-PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
-COOLDOWN_S         = 600
+PROB_MIN           = 86            # <— Mindestens 70% Wahrscheinlichkeit
+COOLDOWN_S         = 1800
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
 DAILY_SILENCE_S    = 24 * 60 * 60
