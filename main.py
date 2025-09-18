@@ -80,13 +80,13 @@ SR_TF_TP2 = "1h"                   # TP2 aus 1h (wenn möglich)
 SR_TF_TP3 = "4h"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 3                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 3
-CLUSTER_PCT = 0.25 / 100.0         # Cluster-Toleranz (±0.15 %)
-MIN_STRENGTH = 2                   # min. Anzahl an Swings für „starkes“ Level
+CLUSTER_PCT = 0.15 / 100.0         # Cluster-Toleranz (±0.15 %)
+MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
 TP2_FACTOR = 1.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
 ATR_SL  = 1.7
-TP1_ATR = 1.2
+TP1_ATR = 2
 TP2_ATR = 2.4
 TP3_ATR = 3.6
 
@@ -425,11 +425,11 @@ def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -
 
         if tp1 is not None and sl is not None and tp1 > entry and sl < entry:
             used_sr = True
-            # TP2: 1h oder ATR-Faktor
-            tp2 = c1h[0] if c1h and c1h[0] > tp1 else round(entry + (tp1 - entry) * TP2_FACTOR, 6)
-            # TP3: 4h optional
-            tp3 = c4h[0] if c4h and c4h[0] > tp2 else None
-            return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 else None), used_sr
+            # TP2: 4h oder ATR-Faktor
+            tp2 = c4h[0] if c4h and c4h[0] > tp1 else (
+          c1h[0] if c1h and c1h[0] > tp1 else round(entry + (tp1 - entry) * TP2_FACTOR, 6)
+      )
+tp3 = None   # optional weglassen oder ATR-Fallback definieren
 
     else:  # SHORT
         c15 = candidates_below(sup_15, entry, MIN_STRENGTH)
@@ -450,10 +450,10 @@ def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -
 
         if tp1 is not None and sl is not None and tp1 < entry and sl > entry:
             used_sr = True
-            tp2 = c1h[0] if c1h and c1h[0] < tp1 else round(entry - (entry - tp1) * TP2_FACTOR, 6)
-            tp3 = c4h[0] if c4h and c4h[0] < tp2 else None
-            return entry, round(sl,6), round(tp1,6), round(tp2,6), (round(tp3,6) if tp3 else None), used_sr
-
+            tp2 = c4h[0] if c4h and c4h[0] < tp1 else (
+          c1h[0] if c1h and c1h[0] < tp1 else round(entry - (entry - tp1) * TP2_FACTOR, 6)
+      )
+tp3 = None
     # --- ATR Fallback ---
     if direction == "LONG":
         sl  = round(entry - ATR_SL  * atrv, 6)
