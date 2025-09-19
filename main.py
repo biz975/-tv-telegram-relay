@@ -123,12 +123,12 @@ MICRO_FIB_PIVOT_R      = 2
 # Orderbook-Heatmap (MEXC gratis, REST via ccxt)
 HEATMAP_ENABLED: bool = True        # Daten erfassen (REST via ccxt)
 HEATMAP_USE_IN_ANALYSIS: bool = True  # Heatmap in Probability/Checkliste einfließen lassen
-HEATMAP_LIMIT:   int  = 1000        # Tiefe des Orderbuchs
+HEATMAP_LIMIT:   int  = 1200        # Tiefe des Orderbuchs
 HEATMAP_BIN_PCT: float = 0.02/100.0 # Preis-Bin-Größe (z.B. 0.02%)
-HEATMAP_TOP_N:   int  = 5           # Top-N Bins je Seite
-HEATMAP_NEAR_PCT:float = 0.06/100.0 # „nahe“ = ±0.05% vom Entry
-HEATMAP_BONUS_STRONG: int = 6       # Bonus % wenn nahe Wall stark ist
-HEATMAP_BONUS_WEAK:   int = 3       # Bonus % wenn nahe Wall schwächer ist
+HEATMAP_TOP_N:   int  = 6           # Top-N Bins je Seite
+HEATMAP_NEAR_PCT:float = 0.04/100.0 # „nahe“ = ±0.05% vom Entry
+HEATMAP_BONUS_STRONG: int = 4       # Bonus % wenn nahe Wall stark ist
+HEATMAP_BONUS_WEAK:   int = 2       # Bonus % wenn nahe Wall schwächer ist
 
 def _calc_notional(price: float, qty: float) -> float:
     try:
