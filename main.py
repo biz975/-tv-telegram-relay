@@ -732,7 +732,7 @@ async def scan_once():
                         prob = prob_score(ew_dir=="LONG", ew_dir=="SHORT", True, True, True)
                         if ew_score >= 5: prob = min(prob+5, 90)
                         if prob >= EARLY_PROB_MIN:
-                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT}"
+                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT"
                             if not need_early_throttle(ekey, now, EARLY_COOLDOWN_S):
                                 tags = []
                                 if ew_cons["vol"]: tags.append("Vol OK")
