@@ -98,7 +98,7 @@ PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 600
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
-DAILY_SILENCE_S    = 24 * 60 * 60
+DAILY_SILENCE_S    = 6 * 60 * 60
 
 # ====== Anzeige-Settings ======
 COMPACT_SIGNALS = True
