@@ -59,7 +59,7 @@ SYMBOLS = [
 
 # ====== Analyse & Scan ======
 TF_TRIGGER = "5m"                  # Signal-TF (Bias/Vol/RSI/EMAs)
-TF_FILTERS = ["15m","1h","4h"]     # Trendfilter (streng)
+TF_FILTERS = ["15m","1h"]          # Trendfilter (gelockert): NUR 15m & 1h müssen aligned sein
 LOOKBACK = 500
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
@@ -429,9 +429,9 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
     else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
-    # HTF-Alignment (KO)
-    if (up_all if direction=="LONG" else dn_all): ok.append("HTF align (15m/1h/4h)")
-    else:                                         return (False, ok, ["HTF nicht aligned"])
+    # HTF-Alignment (KO) — nur 15m & 1h
+    if (up_all if direction=="LONG" else dn_all): ok.append("HTF align (15m/1h)")
+    else:                                         return (False, ok, ["HTF nicht aligned (15m/1h)"])
 
     # Bias durch Engulf oder EMA-Stack (KO)
     bias_ok = (trig["bull"] or trig["long_fast"]) if direction=="LONG" else (trig["bear"] or trig["short_fast"])
@@ -588,7 +588,6 @@ def early_confluence(df5: pd.DataFrame) -> Tuple[str | None, int, Dict[str,bool]
     ema100_ = ta.ema(df5.close, 100).iloc[-1]
     stack_dn = bool(c.iloc[-1] < ema50_ < ema100_)
     stack_up = bool(c.iloc[-1] > ema50_ > ema100_)
-
     dir_short = vol_ok and bear_abs and ret_dn and stack_dn and micro_fib_ok(df5, "SHORT")
     dir_long  = vol_ok and bull_abs and ret_up and stack_up and micro_fib_ok(df5, "LONG")
 
@@ -616,7 +615,6 @@ def early_confluence(df5: pd.DataFrame) -> Tuple[str | None, int, Dict[str,bool]
 async def send_signal(symbol: str, tf: str, direction: str,
                       entry: float, sl: float, tp1: float, tp2: float, tp3: float | None,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
-
     if COMPACT_SIGNALS:
         lines = [
             f"🛡 *LOCKER ≥70%* — {symbol} {tf}",
@@ -665,7 +663,7 @@ async def send_mode_banner():
         f"• Scan alle 15 Minuten\n"
         f"{safe_line}\n"
         f"{vol_line}\n"
-        "• HTF strikt aligned (15m/1h/4h)\n"
+        "• HTF aligned (15m & 1h)\n"
         f"• ATR%-Schwelle aktiv (≥ {MIN_ATR_PCT:.2f}%)\n"
         f"• Wahrscheinlichkeit ≥ {PROB_MIN}%\n"
         "• TP1=15m, TP2=1h, TP3=4h (sofern vorhanden). Fallback: ATR (weiter entfernte TP2/TP3)\n"
@@ -734,7 +732,7 @@ async def scan_once():
                         prob = prob_score(ew_dir=="LONG", ew_dir=="SHORT", True, True, True)
                         if ew_score >= 5: prob = min(prob+5, 90)
                         if prob >= EARLY_PROB_MIN:
-                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT"
+                            ekey = f"{sym}:{ew_dir}:EARLY_STRICT}"
                             if not need_early_throttle(ekey, now, EARLY_COOLDOWN_S):
                                 tags = []
                                 if ew_cons["vol"]: tags.append("Vol OK")
@@ -773,7 +771,7 @@ async def scan_once():
                 safe_ok_long  = bool(long_ok  and (not REQUIRE_ENTRY_VOL or entry_vol_long_ok))
                 safe_ok_short = bool(short_ok and (not REQUIRE_ENTRY_VOL or entry_vol_short_ok))
 
-            # Trendfilter Hauptsignal
+            # Trendfilter Hauptsignal — NUR 15m & 1h
             up_all, dn_all = True, True
             for tf in TF_FILTERS:
                 df_tf = fetch_df(sym, tf)
