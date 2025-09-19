@@ -64,7 +64,7 @@ LOOKBACK = 500
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
 # ====== Safe-Entry (Pullback in Fib-Zone auf 15m) ======
-SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriterium
+SAFE_ENTRY_REQUIRED = True        # <— Locker: Safe-Entry ist KEIN KO-Kriterium
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
@@ -111,7 +111,7 @@ EARLY_PROB_MIN         = 82
 EARLY_VOL_FACTOR       = 1.40
 EARLY_WICK_MIN_PCT     = 45.0
 EARLY_BOS_LOOKBACK     = 30
-EARLY_RETEST_MAX_BARS  = 4
+EARLY_RETEST_MAX_BARS  = 3
 
 # Micro-Fib (5m) Qualität des ersten Pullbacks nach BOS
 MICRO_FIB_ENABLED      = True
@@ -126,7 +126,7 @@ HEATMAP_USE_IN_ANALYSIS: bool = True  # Heatmap in Probability/Checkliste einfli
 HEATMAP_LIMIT:   int  = 1000        # Tiefe des Orderbuchs
 HEATMAP_BIN_PCT: float = 0.02/100.0 # Preis-Bin-Größe (z.B. 0.02%)
 HEATMAP_TOP_N:   int  = 5           # Top-N Bins je Seite
-HEATMAP_NEAR_PCT:float = 0.08/100.0 # „nahe“ = ±0.05% vom Entry
+HEATMAP_NEAR_PCT:float = 0.06/100.0 # „nahe“ = ±0.05% vom Entry
 HEATMAP_BONUS_STRONG: int = 6       # Bonus % wenn nahe Wall stark ist
 HEATMAP_BONUS_WEAK:   int = 3       # Bonus % wenn nahe Wall schwächer ist
 
