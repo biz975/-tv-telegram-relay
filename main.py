@@ -105,7 +105,7 @@ COMPACT_SIGNALS = True
 
 # ====== Early-STRIKT (optional, gleiche Qualität wie Hauptsignal) ======
 EARLY_WARN_ENABLED     = True
-EARLY_STRICT_MODE      = False
+EARLY_STRICT_MODE      = True
 EARLY_COOLDOWN_S       = 300
 EARLY_PROB_MIN         = 82
 EARLY_VOL_FACTOR       = 1.40
