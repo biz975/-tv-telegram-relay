@@ -430,15 +430,15 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
     # HTF-Alignment (KO)
-aligned = sum([
-    trig["trend_15m"] == direction,
-    trig["trend_1h"] == direction,
-    trig["trend_4h"] == direction
-])
-
-if aligned >= 2:  # mindestens 2/3 müssen übereinstimmen
-    ok.append("HTF aligned (>=2/3)")
-else:
+    aligned = sum([
+        trig["trend_15m"] == direction,
+        trig["trend_1h"] == direction,
+        trig["trend_4h"] == direction
+    ])
+    if aligned >= 2:  # mindestens 2/3 müssen passen
+        ok.append("HTF aligned (>=2/3)")
+    else:
+        return (False, ok, ["KO: HTF nicht aligned"])                                
     return (False, ok, ["KO: HTF nicht aligned"])                                         return (False, ok, ["HTF nicht aligned"])
 
     # Bias durch Engulf oder EMA-Stack (KO)
