@@ -68,7 +68,7 @@ SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriteri
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
-FIB_TOL_PCT = 0.10 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
+FIB_TOL_PCT = 0.25 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
 # Volumen-Bestätigung direkt am Safe-Entry (15m)
 ENTRY_VOL_FACTOR = 1.15            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
@@ -125,8 +125,8 @@ HEATMAP_ENABLED: bool = True        # Daten erfassen (REST via ccxt)
 HEATMAP_USE_IN_ANALYSIS: bool = True  # Heatmap in Probability/Checkliste einfließen lassen
 HEATMAP_LIMIT:   int  = 1200        # Tiefe des Orderbuchs
 HEATMAP_BIN_PCT: float = 0.02/100.0 # Preis-Bin-Größe (z.B. 0.02%)
-HEATMAP_TOP_N:   int  = 6           # Top-N Bins je Seite
-HEATMAP_NEAR_PCT:float = 0.04/100.0 # „nahe“ = ±0.05% vom Entry
+HEATMAP_TOP_N:   int  = 5           # Top-N Bins je Seite
+HEATMAP_NEAR_PCT:float = 0.07/100.0 # „nahe“ = ±0.05% vom Entry
 HEATMAP_BONUS_STRONG: int = 4       # Bonus % wenn nahe Wall stark ist
 HEATMAP_BONUS_WEAK:   int = 2       # Bonus % wenn nahe Wall schwächer ist
 
