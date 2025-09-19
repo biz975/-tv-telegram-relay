@@ -91,10 +91,10 @@ TP2_ATR = 2.4
 TP3_ATR = 3.6
 
 # ====== Checklisten-Settings (gelockert) ======
-MIN_ATR_PCT        = 0.40
+MIN_ATR_PCT        = 0.38
 VOL_SPIKE_FACTOR   = 1.5
 REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
-PROB_MIN           = 84            # <— Mindestens 70% Wahrscheinlichkeit
+PROB_MIN           = 82            # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 900
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
