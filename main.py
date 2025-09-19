@@ -64,7 +64,7 @@ LOOKBACK = 500
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
 # ====== Safe-Entry (Pullback in Fib-Zone auf 15m) ======
-SAFE_ENTRY_REQUIRED = True        # <— Locker: Safe-Entry ist KEIN KO-Kriterium
+SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriterium
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
@@ -91,11 +91,11 @@ TP2_ATR = 2.4
 TP3_ATR = 3.6
 
 # ====== Checklisten-Settings (gelockert) ======
-MIN_ATR_PCT        = 0.38
+MIN_ATR_PCT        = 0.35
 VOL_SPIKE_FACTOR   = 1.5
 REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
-PROB_MIN           = 82            # <— Mindestens 70% Wahrscheinlichkeit
-COOLDOWN_S         = 900
+PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
+COOLDOWN_S         = 600
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
 DAILY_SILENCE_S    = 24 * 60 * 60
