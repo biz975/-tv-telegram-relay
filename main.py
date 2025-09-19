@@ -106,16 +106,16 @@ COMPACT_SIGNALS = True
 # ====== Early-STRIKT (optional, gleiche Qualität wie Hauptsignal) ======
 EARLY_WARN_ENABLED     = True
 EARLY_STRICT_MODE      = True
-EARLY_COOLDOWN_S       = 300
-EARLY_PROB_MIN         = 82
-EARLY_VOL_FACTOR       = 1.40
-EARLY_WICK_MIN_PCT     = 45.0
-EARLY_BOS_LOOKBACK     = 30
-EARLY_RETEST_MAX_BARS  = 3
+EARLY_COOLDOWN_S       = 180
+EARLY_PROB_MIN         = 78
+EARLY_VOL_FACTOR       = 1.25
+EARLY_WICK_MIN_PCT     = 35.0
+EARLY_BOS_LOOKBACK     = 20
+EARLY_RETEST_MAX_BARS  = 5
 
 # Micro-Fib (5m) Qualität des ersten Pullbacks nach BOS
 MICRO_FIB_ENABLED      = True
-MICRO_FIB_TOL_PCT      = 0.15 / 100.0
+MICRO_FIB_TOL_PCT      = 0.25 / 100.0
 MICRO_FIB_PIVOT_L      = 2
 MICRO_FIB_PIVOT_R      = 2
 
