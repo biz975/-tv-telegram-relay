@@ -617,14 +617,14 @@ async def send_signal(symbol: str, tf: str, direction: str,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
     if COMPACT_SIGNALS:
         lines = [
-            f"🛡 *LOCKER ≥70%* — {symbol} {tf}",
-            f"➡️ *{direction}*",
-            f"🎯 Entry: `{entry}`",
-            f"🏁 TP1: `{tp1}`",
-            f"🏁 TP2: `{tp2}`",
-            *( [f"🏁 TP3: `{tp3}`"] if tp3 is not None else [] ),
-            f"🛡 SL: `{sl}`",
-            f"📈 Prob.: *{prob}%*",
+    f"🛡 *LOCKER ≥70%* — {symbol} {tf}",
+    f"➡️ *{direction}*",
+    f"🎯 Entry: `{entry}`",
+    f"🏁 TP1 (25% Margin): `{tp1}`",
+    f"🏁 TP2 (50% Margin): `{tp2}`",
+    *( [f"🏁 TP3 (25% Margin): `{tp3}`"] if tp3 is not None else [] ),
+    f"🛡 SL (Rest 30% Margin sichern): `{sl}`",
+    f"📈 Prob.: *{prob}%*",
         ]
         text = "\n".join(lines)
     else:
