@@ -80,15 +80,15 @@ SR_TF_TP2 = "4h"                   # TP2 aus 1h (wenn möglich)
 SR_TF_TP3 = "4h"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 2                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 2
-CLUSTER_PCT = 0.40 / 100.0         # Cluster-Toleranz (±0.15 %)
-MIN_STRENGTH = 2                   # min. Anzahl an Swings für „starkes“ Level
-TP2_FACTOR = 2                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
+CLUSTER_PCT = 0.50 / 100.0         # Cluster-Toleranz (±0.15 %)
+MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
+TP2_FACTOR = 2.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
 # ====== ATR-Fallback (nur wenn S/R nicht verfügbar) ======
-ATR_SL  = 2.5
-TP1_ATR = 4.0
-TP2_ATR = 7.0
-TP3_ATR = 10
+ATR_SL  = 2.8
+TP1_ATR = 5.0
+TP2_ATR = 8.0
+TP3_ATR = 12
 
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.20
