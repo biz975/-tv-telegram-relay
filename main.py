@@ -71,7 +71,7 @@ PIVOT_RIGHT_TRIG = 3
 FIB_TOL_PCT = 0.5 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
 # Volumen-Bestätigung direkt am Safe-Entry (15m)
-ENTRY_VOL_FACTOR = 1.05            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
+ENTRY_VOL_FACTOR = 1.03            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
 REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestätigung (Qualitätsanker)
 
 # ====== S/R (Timeframes für TPs & SL) ======
@@ -92,7 +92,7 @@ TP3_ATR = 7
 
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.30
-VOL_SPIKE_FACTOR   = 1.5
+VOL_SPIKE_FACTOR   = 1.3
 REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
 PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 600
