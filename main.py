@@ -78,9 +78,9 @@ REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestäti
 SR_TF_TP1 = "4h"                  # TP1 aus 15m
 SR_TF_TP2 = "8h"                   # TP2 aus 1h (wenn möglich)
 SR_TF_TP3 = "1d"                   # TP3 aus 4h (optional)
-PIVOT_LEFT = 2                     # Pivot-Breite für Swings
-PIVOT_RIGHT = 2
-CLUSTER_PCT = 0.50 / 100.0         # Cluster-Toleranz (±0.15 %)
+PIVOT_LEFT = 3                     # Pivot-Breite für Swings
+PIVOT_RIGHT = 3
+CLUSTER_PCT = 0.60 / 100.0         # Cluster-Toleranz (±0.15 %)
 MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
 TP2_FACTOR = 2.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
