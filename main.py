@@ -75,8 +75,8 @@ ENTRY_VOL_FACTOR = 1.20            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
 REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestätigung (Qualitätsanker)
 
 # ====== S/R (Timeframes für TPs & SL) ======
-SR_TF_TP1 = "1h"                  # TP1 aus 15m
-SR_TF_TP2 = "4h"                   # TP2 aus 1h (wenn möglich)
+SR_TF_TP1 = "4h"                  # TP1 aus 15m
+SR_TF_TP2 = "8h"                   # TP2 aus 1h (wenn möglich)
 SR_TF_TP3 = "1d"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 2                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 2
