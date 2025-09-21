@@ -109,8 +109,8 @@ EARLY_STRICT_MODE      = True
 EARLY_COOLDOWN_S       = 300
 EARLY_PROB_MIN         = 78
 EARLY_VOL_FACTOR       = 1.20
-EARLY_WICK_MIN_PCT     = 45.0 
-EARLY_BOS_LOOKBACK     = 30
+EARLY_WICK_MIN_PCT     = 30.0 
+EARLY_BOS_LOOKBACK     = 50
 EARLY_RETEST_MAX_BARS  = 3
 
 # Micro-Fib (5m) Qualität des ersten Pullbacks nach BOS
