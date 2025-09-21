@@ -68,7 +68,7 @@ SAFE_ENTRY_REQUIRED = True        # <— Locker: Safe-Entry ist KEIN KO-Kriteriu
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 2                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 2
-FIB_TOL_PCT = 30 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
+FIB_TOL_PCT = 40 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
 # Volumen-Bestätigung direkt am Safe-Entry (15m)
 ENTRY_VOL_FACTOR = 1.20            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
