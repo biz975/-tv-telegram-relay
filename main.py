@@ -77,7 +77,7 @@ REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestäti
 # ====== S/R (Timeframes für TPs & SL) ======
 SR_TF_TP1 = "1h"                  # TP1 aus 15m
 SR_TF_TP2 = "4h"                   # TP2 aus 1h (wenn möglich)
-SR_TF_TP3 = "4h"                   # TP3 aus 4h (optional)
+SR_TF_TP3 = "1d"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 2                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 2
 CLUSTER_PCT = 0.50 / 100.0         # Cluster-Toleranz (±0.15 %)
@@ -88,7 +88,7 @@ TP2_FACTOR = 2.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 ATR_SL  = 2.8
 TP1_ATR = 5.0
 TP2_ATR = 8.0
-TP3_ATR = 12
+TP3_ATR = 14
 
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.30
