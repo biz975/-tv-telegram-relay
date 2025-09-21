@@ -91,7 +91,7 @@ TP2_ATR = 8.0
 TP3_ATR = 12
 
 # ====== Checklisten-Settings (gelockert) ======
-MIN_ATR_PCT        = 0.20
+MIN_ATR_PCT        = 0.30
 VOL_SPIKE_FACTOR   = 1.15
 REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
 PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
