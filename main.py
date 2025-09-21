@@ -68,10 +68,10 @@ SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriteri
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 3                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 3
-FIB_TOL_PCT = 0.5 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
+FIB_TOL_PCT = 20 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
 
 # Volumen-Bestätigung direkt am Safe-Entry (15m)
-ENTRY_VOL_FACTOR = 1.03            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
+ENTRY_VOL_FACTOR = 1.20            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
 REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestätigung (Qualitätsanker)
 
 # ====== S/R (Timeframes für TPs & SL) ======
@@ -115,7 +115,7 @@ EARLY_RETEST_MAX_BARS  = 3
 
 # Micro-Fib (5m) Qualität des ersten Pullbacks nach BOS
 MICRO_FIB_ENABLED      = True
-MICRO_FIB_TOL_PCT      = 0.25 / 100.0
+MICRO_FIB_TOL_PCT      = 0.15 / 100.0
 MICRO_FIB_PIVOT_L      = 2
 MICRO_FIB_PIVOT_R      = 2
 
