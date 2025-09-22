@@ -64,7 +64,7 @@ LOOKBACK = 500
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
 # ====== Safe-Entry (Pullback in Fib-Zone auf 15m) ======
-SAFE_ENTRY_REQUIRED = True        # <— Locker: Safe-Entry ist KEIN KO-Kriterium
+SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriterium
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 2                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 2
