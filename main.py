@@ -93,7 +93,7 @@ TP3_ATR = 14
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.30
 VOL_SPIKE_FACTOR   = 1.15
-REQUIRE_VOL_SPIKE  = False         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
+REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
 PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 600
 
