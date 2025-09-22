@@ -121,8 +121,8 @@ MICRO_FIB_PIVOT_R      = 2
 
 # ====== HEATMAP Settings ======
 # Orderbook-Heatmap (MEXC via ccxt, nur öffentliche Daten)
-HEATMAP_ENABLED: bool = True          # Orderbuch-Daten erfassen
-HEATMAP_USE_IN_ANALYSIS: bool = True  # Heatmap in Score/Checkliste einbeziehen
+HEATMAP_ENABLED: bool = False          # Orderbuch-Daten erfassen
+HEATMAP_USE_IN_ANALYSIS: bool = False  # Heatmap in Score/Checkliste einbeziehen
 HEATMAP_LIMIT:   int  = 1200          # Tiefe des Orderbuchs
 HEATMAP_BIN_PCT: float = 0.02/100.0   # Preis-Bin-Größe (z.B. 0.02%)
 HEATMAP_TOP_N:   int  = 5             # Top-N Bins je Seite
