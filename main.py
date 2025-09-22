@@ -80,7 +80,7 @@ SR_TF_TP2 = "8h"                   # TP2 aus 1h (wenn möglich)
 SR_TF_TP3 = "1d"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 3                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 3
-CLUSTER_PCT = 0.60 / 100.0         # Cluster-Toleranz (±0.15 %)
+CLUSTER_PCT = 0.20 / 100.0         # Cluster-Toleranz (±0.15 %)
 MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
 TP2_FACTOR = 2.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
@@ -93,7 +93,7 @@ TP3_ATR = 14
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.30
 VOL_SPIKE_FACTOR   = 1.15
-REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
+REQUIRE_VOL_SPIKE  = False         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
 PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 600
 
