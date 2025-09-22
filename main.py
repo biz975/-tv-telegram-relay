@@ -1,5 +1,6 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
-# MODE: Locker, aber ≥70% — Safe-Entry optional (mit Volumen-Bestätigung), Volumen-Spike nur Bonus, PROB_MIN=70
+# MODE: Locker, aber ≥80% — Safe-Entry optional (mit Volumen-Bestätigung), 
+# Volumen-Spike nur Bonus, PROB_MIN=80
 # S/R-Ziele (15m/1h/4h), Scan alle 15 Minuten
 # Early-STRIKT (BOS+Retest, EMA-Stack, Micro-Fib) bleibt aktiv
 
@@ -68,19 +69,19 @@ SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriteri
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 2                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 2
-FIB_TOL_PCT = 40 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
+FIB_TOL_PCT = 40 / 100.0           # ±0.40 % Toleranz rund um 0.5–0.618
 
 # Volumen-Bestätigung direkt am Safe-Entry (15m)
 ENTRY_VOL_FACTOR = 1.20            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
 REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestätigung (Qualitätsanker)
 
 # ====== S/R (Timeframes für TPs & SL) ======
-SR_TF_TP1 = "4h"                  # TP1 aus 15m
+SR_TF_TP1 = "4h"                   # TP1 aus 15m
 SR_TF_TP2 = "8h"                   # TP2 aus 1h (wenn möglich)
 SR_TF_TP3 = "1d"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 3                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 3
-CLUSTER_PCT = 0.20 / 100.0         # Cluster-Toleranz (±0.15 %)
+CLUSTER_PCT = 0.20 / 100.0         # Cluster-Toleranz (±0.20%)
 MIN_STRENGTH = 3                   # min. Anzahl an Swings für „starkes“ Level
 TP2_FACTOR = 2.20                  # Fallback: TP2 = Entry + 1.2*(TP1-Entry)
 
@@ -92,9 +93,9 @@ TP3_ATR = 14
 
 # ====== Checklisten-Settings (gelockert) ======
 MIN_ATR_PCT        = 0.30
-VOL_SPIKE_FACTOR   = 1.15
-REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
-PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
+VOL_SPIKE_FACTOR   = 1.20
+REQUIRE_VOL_SPIKE  = False         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
+PROB_MIN           = 80            # <— Mindestens 80% Wahrscheinlichkeit
 COOLDOWN_S         = 600
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
@@ -126,7 +127,7 @@ HEATMAP_USE_IN_ANALYSIS: bool = True  # Heatmap in Probability/Checkliste einfli
 HEATMAP_LIMIT:   int  = 1200        # Tiefe des Orderbuchs
 HEATMAP_BIN_PCT: float = 0.02/100.0 # Preis-Bin-Größe (z.B. 0.02%)
 HEATMAP_TOP_N:   int  = 5           # Top-N Bins je Seite
-HEATMAP_NEAR_PCT:float = 0.07/100.0 # „nahe“ = ±0.05% vom Entry
+HEATMAP_NEAR_PCT:float = 0.07/100.0 # „nahe“ = ±0.07% vom Entry
 HEATMAP_BONUS_STRONG: int = 4       # Bonus % wenn nahe Wall stark ist
 HEATMAP_BONUS_WEAK:   int = 2       # Bonus % wenn nahe Wall schwächer ist
 
@@ -195,7 +196,7 @@ if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
 bot = Bot(token=TG_TOKEN)
-app = FastAPI(title="MEXC Auto Scanner → Telegram (Locker ≥70% + S/R)")
+app = FastAPI(title="MEXC Auto Scanner → Telegram (Locker ≥80% + S/R)")
 ex = ccxt.mexc({"enableRateLimit": True})
 
 last_signal: Dict[str, float] = {}
@@ -216,19 +217,29 @@ def atr(h, l, c, length: int = 14):
 def vol_sma(v, length: int = 20):
     return ta.sma(v, length)
 
+def macd_indicator(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    return ta.macd(series, fast, slow, signal)
+
+def adx_indicator(h, l, c, length: int = 14):
+    return ta.adx(h, l, c, length)
+
 def bullish_engulf(o, h, l, c) -> bool:
     return (c.iloc[-1] > o.iloc[-1]) and (o.iloc[-1] <= l.iloc[-2]) and (c.iloc[-1] >= h.iloc[-2])
 
 def bearish_engulf(o, h, l, c) -> bool:
     return (c.iloc[-1] < o.iloc[-1]) and (o.iloc[-1] >= l.iloc[-2]) and (c.iloc[-1] <= l.iloc[-2])
 
-def prob_score(long_ok: bool, short_ok: bool, vol_ok: bool, trend_ok: bool, ema200_align: bool) -> int:
-    base = 70 if (long_ok or short_ok) else 0
-    if base == 0: return 0
+def prob_score(long_ok: bool, short_ok: bool, vol_ok: bool, trend_ok: bool, 
+               ema200_align: bool, momentum_ok: bool = False, time_ok: bool = False) -> int:
+    base = 60 if (long_ok or short_ok) else 0
+    if base == 0:
+        return 0
     base += 5 if vol_ok else 0
     base += 5 if trend_ok else 0
     base += 5 if ema200_align else 0
-    return min(base, 90)
+    base += 5 if momentum_ok else 0
+    base += 5 if time_ok else 0
+    return min(base, 100)
 
 def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame:
     ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -266,6 +277,17 @@ def analyze_trigger(df: pd.DataFrame) -> Dict[str, Any]:
     bear   = bearish_engulf(o, h, l, c)
     vol_ok = v.iloc[-1] > (VOL_SPIKE_FACTOR * df.volma.iloc[-1])
 
+    # Zusätzliche Indikatoren für Score-Berechnung
+    macd_df = macd_indicator(df.close)
+    adx_df = adx_indicator(df.high, df.low, df.close)
+    macd_line = float(macd_df["MACD_12_26_9"].iloc[-1] if not math.isnan(macd_df["MACD_12_26_9"].iloc[-1]) else 0.0)
+    macd_signal = float(macd_df["MACDS_12_26_9"].iloc[-1] if not math.isnan(macd_df["MACDS_12_26_9"].iloc[-1]) else 0.0)
+    macd_up = macd_line > macd_signal
+    macd_dn = macd_line < macd_signal
+    adx_val = float(adx_df["ADX_14"].iloc[-1] if not math.isnan(adx_df["ADX_14"].iloc[-1]) else 0.0)
+    trend_up = bool(df.ema50.iloc[-1] > df.ema200.iloc[-1])
+    trend_dn = bool(df.ema50.iloc[-1] < df.ema200.iloc[-1])
+
     return {
         "bull": bull, "bear": bear,
         "long_fast": long_fast, "short_fast": short_fast,
@@ -275,6 +297,9 @@ def analyze_trigger(df: pd.DataFrame) -> Dict[str, Any]:
         "ema200_up": (c.iloc[-1] > df.ema200.iloc[-1]),
         "ema200_dn": (c.iloc[-1] < df.ema200.iloc[-1]),
         "rsi": float(df.rsi.iloc[-1]),
+        "trend_up": trend_up, "trend_dn": trend_dn,
+        "macd_up": macd_up, "macd_dn": macd_dn,
+        "adx": adx_val,
     }
 
 # ====== Safe-Entry (letzte Impulsbewegung per Pivots, SAFE_ENTRY_TF) ======
@@ -419,55 +444,81 @@ def make_levels_sr_mtf(symbol: str, direction: str, entry: float, atrv: float) -
         tp3 = round(entry - TP3_ATR * atrv, 6)
     return entry, sl, tp1, tp2, tp3, False
 
-# ====== Checkliste (gelockert, ≥70%) ======
+# ====== Checkliste (gelockert, ≥80%) ======
 def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, dn_all: bool,
-                            safe_ok_long: bool, safe_ok_short: bool) -> Tuple[bool, List[str], List[str]]:
+                             safe_ok_long: bool, safe_ok_short: bool) -> Tuple[bool, List[str], List[str]]:
     ok, warn = [], []
 
     # ATR-Volatilität als KO
     atr_pct = (trig["atr"] / max(trig["price"], 1e-9)) * 100.0
-    if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
-    else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
+    if atr_pct >= MIN_ATR_PCT:
+        ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
+    else:
+        return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
     # HTF-Alignment (KO) — nur 15m & 1h
-    if (up_all if direction=="LONG" else dn_all): ok.append("HTF align (15m/1h)")
-    else:                                         return (False, ok, ["HTF nicht aligned (15m/1h)"])
+    if (up_all if direction=="LONG" else dn_all):
+        ok.append("HTF align (15m/1h)")
+    else:
+        return (False, ok, ["HTF nicht aligned (15m/1h)"])
 
     # Bias durch Engulf oder EMA-Stack (KO)
     bias_ok = (trig["bull"] or trig["long_fast"]) if direction=="LONG" else (trig["bear"] or trig["short_fast"])
-    if bias_ok: ok.append("Engulf/EMA-Stack")
-    else:       return (False, ok, ["Kein Engulf/EMA-Stack"])
+    if bias_ok:
+        ok.append("Engulf/EMA-Stack")
+    else:
+        return (False, ok, ["Kein Engulf/EMA-Stack"])
 
     # EMA200 in Richtung (KO)
     ema200_ok = trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"]
-    if ema200_ok: ok.append("EMA200 ok")
-    else:         return (False, ok, ["EMA200 gegen Setup"])
+    if ema200_ok:
+        ok.append("EMA200 ok")
+    else:
+        return (False, ok, ["EMA200 gegen Setup"])
+
+    # ADX filter (KO)
+    if trig["adx"] >= 20:
+        ok.append("ADX≥20")
+    else:
+        return (False, ok, ["ADX<20 (Trend schwach)"])
 
     # Volumen-Spike: Pflicht/Bonus je Setting
     if REQUIRE_VOL_SPIKE:
-        if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
-        else:              return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
+        if trig["vol_ok"]:
+            ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Pflicht)")
+        else:
+            return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
     else:
-        if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Bonus)")
-        else:              warn.append("Vol normal (kein Spike)")
+        if trig["vol_ok"]:
+            ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Bonus)")
+        else:
+            warn.append("Vol normal (kein Spike)")
 
     # Safe-Entry (Fib 0.5–0.618)
     if SAFE_ENTRY_REQUIRED:
         safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
-        if safe_ok: ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
-        else:       return (False, ok, [f"Kein Safe-Entry mit Vol-Bestätigung ({SAFE_ENTRY_TF})"])
+        if safe_ok:
+            ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
+        else:
+            return (False, ok, [f"Kein Safe-Entry mit Vol-Bestätigung ({SAFE_ENTRY_TF})"])
     else:
         safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
-        if safe_ok: ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
-        else:       warn.append(f"Kein Safe-Entry ({SAFE_ENTRY_TF})")
+        if safe_ok:
+            ok.append(f"Safe-Entry+Vol ({SAFE_ENTRY_TF})")
+        else:
+            warn.append(f"Kein Safe-Entry ({SAFE_ENTRY_TF})")
 
     # RSI Hinweis
     if direction=="LONG":
-        if trig["rsi"] > 70: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
-        else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
+        if trig["rsi"] > 70:
+            warn.append(f"RSI hoch ({trig['rsi']:.1f})")
+        else:
+            ok.append(f"RSI ok ({trig['rsi']:.1f})")
     else:
-        if trig["rsi"] < 30: warn.append(f"RSI tief ({trig['rsi']:.1f})")
-        else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
+        if trig["rsi"] < 30:
+            warn.append(f"RSI tief ({trig['rsi']:.1f})")
+        else:
+            ok.append(f"RSI ok ({trig['rsi']:.1f})")
 
     return (True, ok, warn)
 
@@ -508,25 +559,29 @@ def vol_above_ma(v: pd.Series, length: int = 20, factor: float = 1.15) -> bool:
 
 def swing_low_idx(df: pd.DataFrame, lookback: int = 30) -> int | None:
     lo = df['low'].iloc[-lookback:].values
-    if len(lo) < 3: return None
+    if len(lo) < 3:
+        return None
     i_rel = lo.argmin()
     return len(df) - lookback + int(i_rel)
 
 def swing_high_idx(df: pd.DataFrame, lookback: int = 30) -> int | None:
     hi = df['high'].iloc[-lookback:].values
-    if len(hi) < 3: return None
+    if len(hi) < 3:
+        return None
     i_rel = hi.argmax()
     return len(df) - lookback + int(i_rel)
 
 def bos_breakdown(df: pd.DataFrame, lookback: int) -> Tuple[bool, float]:
     i = swing_low_idx(df, lookback)
-    if i is None or i >= len(df)-1: return (False, 0.0)
+    if i is None or i >= len(df)-1:
+        return (False, 0.0)
     lvl = float(df['low'].iloc[i])
     return (bool(df['close'].iloc[-1] < lvl), lvl)
 
 def bos_breakup(df: pd.DataFrame, lookback: int) -> Tuple[bool, float]:
     i = swing_high_idx(df, lookback)
-    if i is None or i >= len(df)-1: return (False, 0.0)
+    if i is None or i >= len(df)-1:
+        return (False, 0.0)
     lvl = float(df['high'].iloc[i])
     return (bool(df['close'].iloc[-1] > lvl), lvl)
 
@@ -553,15 +608,20 @@ def micro_last_impulse(df: pd.DataFrame) -> Tuple[Tuple[int,float], Tuple[int,fl
     highs=list(df['high'].values); lows=list(df['low'].values)
     hi=_pivot_idxs(highs, MICRO_FIB_PIVOT_L, MICRO_FIB_PIVOT_R, True)
     lo=_pivot_idxs(lows , MICRO_FIB_PIVOT_L, MICRO_FIB_PIVOT_R, False)
-    if not hi or not lo: return None
-    if lo[-1] < hi[-1]:  return ((lo[-1], lows[lo[-1]]),(hi[-1], highs[hi[-1]]))
-    if hi[-1] < lo[-1]:  return ((lo[-1], lows[lo[-1]]),(hi[-1], highs[hi[-1]]))
+    if not hi or not lo:
+        return None
+    if lo[-1] < hi[-1]:
+        return ((lo[-1], lows[lo[-1]]),(hi[-1], highs[hi[-1]]))
+    if hi[-1] < lo[-1]:
+        return ((lo[-1], lows[lo[-1]]),(hi[-1], highs[hi[-1]]))
     return None
 
 def micro_fib_ok(df: pd.DataFrame, direction: str) -> bool:
-    if not MICRO_FIB_ENABLED: return True
+    if not MICRO_FIB_ENABLED:
+        return True
     imp = micro_last_impulse(df)
-    if imp is None: return False
+    if imp is None:
+        return False
     price = float(df['close'].iloc[-1])
     (lo_i, lo_v),(hi_i, hi_v) = imp
     if hi_i > lo_i:
@@ -617,23 +677,25 @@ async def send_signal(symbol: str, tf: str, direction: str,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
     if COMPACT_SIGNALS:
         lines = [
-    f"🛡 *LOCKER ≥70%* — {symbol} {tf}",
-    f"➡️ *{direction}*",
-    f"🎯 Entry: `{entry}`",
-    f"🏁 TP1 (25% Margin): `{tp1}`",
-    f"🏁 TP2 (50% Margin): `{tp2}`",
-    *( [f"🏁 TP3 (25% Margin): `{tp3}`"] if tp3 is not None else [] ),
-    f"🛡 SL (Rest 30% Margin sichern): `{sl}`",
-    f"📈 Prob.: *{prob}%*",
+            f"🛡 *LOCKER ≥80%* — {symbol} {tf}",
+            f"➡️ *{direction}*",
+            f"🎯 Entry: `{entry}`",
+            f"🏁 TP1 (25% Margin): `{tp1}`",
+            f"🏁 TP2 (50% Margin): `{tp2}`",
+            *( [f"🏁 TP3 (25% Margin): `{tp3}`"] if tp3 is not None else [] ),
+            f"🛡 SL (Rest 30% Margin sichern): `{sl}`",
+            f"📈 Prob.: *{prob}%*",
         ]
         text = "\n".join(lines)
     else:
         checks_line = ""
-        if checklist_ok:   checks_line += f"✅ {', '.join(checklist_ok)}\n"
-        if checklist_warn: checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
+        if checklist_ok:
+            checks_line += f"✅ {', '.join(checklist_ok)}\n"
+        if checklist_warn:
+            checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
         sr_note = "S/R 15m/1h/4h" if used_sr else "ATR-Fallback"
         text = (
-            f"🛡 *LOCKER ≥70%* — Signal {symbol} {tf}\n"
+            f"🛡 *LOCKER ≥80%* — Signal {symbol} {tf}\n"
             f"➡️ *{direction}*  ({sr_note})\n"
             f"🎯 Entry: `{entry}`\n"
             f"🛡 SL: `{sl}`\n"
@@ -659,7 +721,7 @@ async def send_mode_banner():
     vol_line = "• Volumen-Spike: Bonus (kein KO)" if not REQUIRE_VOL_SPIKE else f"• Volumen-Spike: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20"
     safe_line = "• Safe-Entry (Fib 0.5–0.618, 15m): optional, mit Vol-Bestätigung als Bonus" if not SAFE_ENTRY_REQUIRED else "• Safe-Entry (Fib 0.5–0.618, 15m): Pflicht + Vol-Bestätigung"
     text = (
-        "🛡 *Scanner gestartet – MODUS: LOCKER (≥70%) + S/R-Ziele*\n"
+        f"🛡 *Scanner gestartet – MODUS: LOCKER (≥{PROB_MIN}%) + S/R-Ziele*\n"
         f"• Scan alle 15 Minuten\n"
         f"{safe_line}\n"
         f"{vol_line}\n"
@@ -729,13 +791,15 @@ async def scan_once():
                         time.sleep(ex.rateLimit/1000)
                     htf_ok = (up_all if ew_dir=="LONG" else dn_all)
                     if htf_ok:
-                        prob = prob_score(ew_dir=="LONG", ew_dir=="SHORT", True, True, True)
-                        if ew_score >= 5: prob = min(prob+5, 90)
+                        prob = prob_score(ew_dir=="LONG", ew_dir=="SHORT", True, True, True, momentum_ok=True, time_ok=True)
+                        if ew_score >= 5:
+                            prob = min(prob + 5, 100)
                         if prob >= EARLY_PROB_MIN:
                             ekey = f"{sym}:{ew_dir}:EARLY_STRICT"
                             if not need_early_throttle(ekey, now, EARLY_COOLDOWN_S):
                                 tags = []
-                                if ew_cons["vol"]: tags.append("Vol OK")
+                                if ew_cons["vol"]:
+                                    tags.append("Vol OK")
                                 if (ew_dir=="SHORT" and ew_cons["absorption_short"]) or (ew_dir=="LONG" and ew_cons["absorption_long"]):
                                     tags.append("Absorption")
                                 if (ew_dir=="SHORT" and ew_cons["bos_retest_short"]) or (ew_dir=="LONG" and ew_cons["bos_retest_long"]):
@@ -787,10 +851,15 @@ async def scan_once():
                     direction, trig, up_all, dn_all, safe_ok_long, safe_ok_short
                 )
                 if passed:
+                    # Score-Berechnung mit zusätzlichen Faktoren
+                    m_ok = (trig["macd_up"] and trig["rsi"] > 50) if direction=="LONG" else (trig["macd_dn"] and trig["rsi"] < 50)
+                    current_hour = datetime.now(timezone.utc).hour
+                    t_ok = (current_hour <= 2) or (14 <= current_hour <= 17)
                     prob = prob_score(direction=="LONG", direction=="SHORT",
-                                      trig["vol_ok"], up_all or dn_all,
-                                      trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"])
-
+                                      trig["vol_ok"],
+                                      trig["trend_up"] if direction=="LONG" else trig["trend_dn"],
+                                      trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"],
+                                      momentum_ok=m_ok, time_ok=t_ok)
                     # ====== HEATMAP START ======
                     hm_bonus = 0
                     if HEATMAP_ENABLED and HEATMAP_USE_IN_ANALYSIS and heatmap_info and "error" not in heatmap_info:
@@ -821,7 +890,7 @@ async def scan_once():
                                 ok_tags.append("HC: nahe Ask-Wall")
                             else:
                                 warn_tags.append("HC: neutral")
-                        prob = min(prob + hm_bonus, 90)
+                        prob = min(prob + hm_bonus, 100)
                     # ====== HEATMAP END ======
 
                     passes.append((direction, prob, ok_tags, warn_tags, locals().get("hm_bonus", 0)))
@@ -895,7 +964,7 @@ async def _startup():
 async def root():
     return {
         "ok": True,
-        "mode": "locker_sr_min70",
+        "mode": "locker_sr_min80",
         "symbols": SYMBOLS,
         "trigger_tf": TF_TRIGGER,
         "filters": TF_FILTERS,
@@ -934,13 +1003,13 @@ async def manual_scan():
 
 @app.get("/status")
 async def status():
-    return {"ok": True, "mode": "locker_sr_min70", "report": last_scan_report}
+    return {"ok": True, "mode": "locker_sr_min80", "report": last_scan_report}
 
 @app.get("/test")
 async def test():
     text = (
-        "✅ Test: Bot & Telegram OK — Mode: *LOCKER (≥70%) + S/R*, "
+        f"✅ Test: Bot & Telegram OK — Mode: *LOCKER (≥{PROB_MIN}%) + S/R*, "
         f"Safe-Entry optional, Vol-Spike Bonus, Scan: alle 15 Min."
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
-    return {"ok": True, "test": True, "mode": "locker_sr_min70"}
+    return {"ok": True, "test": True, "mode": "locker_sr_min80"}
