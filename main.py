@@ -106,8 +106,8 @@ DAILY_SILENCE_S    = 6 * 60 * 60
 COMPACT_SIGNALS = True
 
 # ====== Early-STRIKT (optional, gleiche Qualität wie Hauptsignal) ======
-EARLY_WARN_ENABLED     = True
-EARLY_STRICT_MODE      = True
+EARLY_WARN_ENABLED     = False
+EARLY_STRICT_MODE      = False
 EARLY_COOLDOWN_S       = 300
 EARLY_PROB_MIN         = 76
 EARLY_VOL_FACTOR       = 1.15
@@ -123,8 +123,8 @@ MICRO_FIB_PIVOT_R      = 2
 
 # ====== HEATMAP START ======
 # Orderbook-Heatmap (MEXC gratis, REST via ccxt)
-HEATMAP_ENABLED: bool = True         # Daten erfassen (REST via ccxt)
-HEATMAP_USE_IN_ANALYSIS: bool = True  # Heatmap in Probability/Checkliste einfließen lassen
+HEATMAP_ENABLED: bool = False         # Daten erfassen (REST via ccxt)
+HEATMAP_USE_IN_ANALYSIS: bool = False  # Heatmap in Probability/Checkliste einfließen lassen
 HEATMAP_LIMIT:   int  = 1200         # Tiefe des Orderbuchs
 HEATMAP_BIN_PCT: float = 0.02/100.0  # Preis-Bin-Größe (z.B. 0.02%)
 HEATMAP_TOP_N:   int  = 5            # Top-N Bins je Seite
