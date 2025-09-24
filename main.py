@@ -60,7 +60,7 @@ SYMBOLS = [
 
 # ====== Analyse & Scan ======
 TF_TRIGGER = "5m"                  # Signal-TF (Bias/Vol/RSI/EMAs)
-TF_FILTERS = ["15m","1h"]          # Trendfilter (gelockert): NUR 15m & 1h müssen aligned sein
+TF_FILTERS = ["15m"]          # Trendfilter (gelockert): NUR 15m & 1h müssen aligned sein
 LOOKBACK = 500
 SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
@@ -471,10 +471,10 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
 
     # RSI Hinweis
     if direction=="LONG":
-        if trig["rsi"] > 70: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
+        if trig["rsi"] > 65: warn.append(f"RSI hoch ({trig['rsi']:.1f})")
         else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
     else:
-        if trig["rsi"] < 30: warn.append(f"RSI tief ({trig['rsi']:.1f})")
+        if trig["rsi"] < 35: warn.append(f"RSI tief ({trig['rsi']:.1f})")
         else: ok.append(f"RSI ok ({trig['rsi']:.1f})")
 
     return (True, ok, warn)
