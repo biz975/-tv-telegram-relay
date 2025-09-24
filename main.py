@@ -75,9 +75,9 @@ ENTRY_VOL_FACTOR = 1.03            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
 REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestätigung (Qualitätsanker)
 
 # ====== S/R (Timeframes für TPs & SL) ======
-SR_TF_TP1 = "15m"                  # TP1 aus 15m
-SR_TF_TP2 = "1h"                   # TP2 aus 1h (wenn möglich)
-SR_TF_TP3 = "4h"                   # TP3 aus 4h (optional)
+SR_TF_TP1 = "4h"                  # TP1 aus 15m
+SR_TF_TP2 = "8h"                   # TP2 aus 1h (wenn möglich)
+SR_TF_TP3 = "8h"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 2                     # Pivot-Breite für Swings
 PIVOT_RIGHT = 2
 CLUSTER_PCT = 0.30 / 100.0         # Cluster-Toleranz (±0.15 %)
@@ -107,7 +107,7 @@ COMPACT_SIGNALS = True
 EARLY_WARN_ENABLED     = True
 EARLY_STRICT_MODE      = True
 EARLY_COOLDOWN_S       = 300
-EARLY_PROB_MIN         = 78
+EARLY_PROB_MIN         = 50
 EARLY_VOL_FACTOR       = 1.20
 EARLY_WICK_MIN_PCT     = 45.0 
 EARLY_BOS_LOOKBACK     = 30
