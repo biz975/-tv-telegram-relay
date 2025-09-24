@@ -1,5 +1,6 @@
 # Autonomous MEXC scanner → Telegram (FastAPI + Scheduler)
-# MODE: Locker, aber ≥70% — Safe-Entry optional (mit Volumen-Bestätigung), Volumen-Spike nur Bonus, PROB_MIN=70
+# MODE: Locker, aber ≥70% — Safe-Entry optional (mit Volumen-Bestätigung), 
+# Volumen-Spike nur Bonus, PROB_MIN=70
 # S/R-Ziele (15m/1h/4h), Scan alle 15 Minuten
 # Early-STRIKT (BOS+Retest, EMA-Stack, Micro-Fib) bleibt aktiv
 
@@ -68,14 +69,14 @@ SAFE_ENTRY_REQUIRED = False        # <— Locker: Safe-Entry ist KEIN KO-Kriteri
 SAFE_ENTRY_TF = "15m"              # Fib-/Impulse-Check auf 15m
 PIVOT_LEFT_TRIG = 2                # Pivots für die Impuls-Erkennung
 PIVOT_RIGHT_TRIG = 2
-FIB_TOL_PCT = 40 / 100.0         # ±0.10 % Toleranz rund um 0.5–0.618
+FIB_TOL_PCT = 40 / 100.0           # ±0.10 % Toleranz rund um 0.5–0.618
 
 # Volumen-Bestätigung direkt am Safe-Entry (15m)
 ENTRY_VOL_FACTOR = 1.20            # Volumen > MA20 × Faktor (z.B. 1.10–1.30)
 REQUIRE_ENTRY_VOL = True           # <— bleibt: Entry nur mit Volumen-Bestätigung (Qualitätsanker)
 
 # ====== S/R (Timeframes für TPs & SL) ======
-SR_TF_TP1 = "4h"                  # TP1 aus 15m
+SR_TF_TP1 = "4h"                   # TP1 aus 15m
 SR_TF_TP2 = "8h"                   # TP2 aus 1h (wenn möglich)
 SR_TF_TP3 = "1d"                   # TP3 aus 4h (optional)
 PIVOT_LEFT = 3                     # Pivot-Breite für Swings
@@ -91,10 +92,11 @@ TP2_ATR = 8.0
 TP3_ATR = 14
 
 # ====== Checklisten-Settings (gelockert) ======
-MIN_ATR_PCT        = 0.30
-VOL_SPIKE_FACTOR   = 1
-REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
-PROB_MIN           = 70            # <— Mindestens 70% Wahrscheinlichkeit
+MIN_ATR_PCT        = 0.20
+VOL_SPIKE_FACTOR   = 1.10
+VOL_SPIKE_FACTOR_4H = 1.50
+REQUIRE_VOL_SPIKE  = False        # <— Vol-Spike ist KEIN KO (nur Bonus)
+PROB_MIN           = 70           # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 600
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
@@ -121,14 +123,14 @@ MICRO_FIB_PIVOT_R      = 2
 
 # ====== HEATMAP START ======
 # Orderbook-Heatmap (MEXC gratis, REST via ccxt)
-HEATMAP_ENABLED: bool = True        # Daten erfassen (REST via ccxt)
+HEATMAP_ENABLED: bool = True         # Daten erfassen (REST via ccxt)
 HEATMAP_USE_IN_ANALYSIS: bool = True  # Heatmap in Probability/Checkliste einfließen lassen
-HEATMAP_LIMIT:   int  = 1200        # Tiefe des Orderbuchs
-HEATMAP_BIN_PCT: float = 0.02/100.0 # Preis-Bin-Größe (z.B. 0.02%)
-HEATMAP_TOP_N:   int  = 5           # Top-N Bins je Seite
-HEATMAP_NEAR_PCT:float = 0.07/100.0 # „nahe“ = ±0.05% vom Entry
-HEATMAP_BONUS_STRONG: int = 4       # Bonus % wenn nahe Wall stark ist
-HEATMAP_BONUS_WEAK:   int = 2       # Bonus % wenn nahe Wall schwächer ist
+HEATMAP_LIMIT:   int  = 1200         # Tiefe des Orderbuchs
+HEATMAP_BIN_PCT: float = 0.02/100.0  # Preis-Bin-Größe (z.B. 0.02%)
+HEATMAP_TOP_N:   int  = 5            # Top-N Bins je Seite
+HEATMAP_NEAR_PCT:float = 0.07/100.0  # „nahe“ = ±0.05% vom Entry
+HEATMAP_BONUS_STRONG: int = 4        # Bonus % wenn nahe Wall stark ist
+HEATMAP_BONUS_WEAK:   int = 2        # Bonus % wenn nahe Wall schwächer ist
 
 def _calc_notional(price: float, qty: float) -> float:
     try:
@@ -451,6 +453,12 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
         if trig["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA (Bonus)")
         else:              warn.append("Vol normal (kein Spike)")
 
+    # 4h Volumen-Spike: Bonus (kein KO)
+    if trig.get("vol4h_ok", False):
+        ok.append(f"4h Vol>{VOL_SPIKE_FACTOR_4H:.2f}×MA (Bonus)")
+    else:
+        warn.append("4h Vol normal (kein Spike)")
+
     # Safe-Entry (Fib 0.5–0.618)
     if SAFE_ENTRY_REQUIRED:
         safe_ok = safe_ok_long if direction=="LONG" else safe_ok_short
@@ -771,6 +779,25 @@ async def scan_once():
                 safe_ok_long  = bool(long_ok  and (not REQUIRE_ENTRY_VOL or entry_vol_long_ok))
                 safe_ok_short = bool(short_ok and (not REQUIRE_ENTRY_VOL or entry_vol_short_ok))
 
+            # 4h Volume-Spike detection (Bonuskriterium)
+            df4h = fetch_df(sym, "4h", limit=22)
+            df4h_closed = df4h
+            if len(df4h) > 0:
+                last_ts = df4h["time"].iloc[-1]
+                if last_ts + 4*60*60*1000 > int(time.time() * 1000):
+                    if len(df4h) > 1:
+                        df4h_closed = df4h.iloc[:-1]
+            vol4h_ok = False
+            if len(df4h_closed) >= 21:
+                v4 = df4h_closed["volume"]
+                v4_ma = vol_sma(v4, 20)
+                if len(v4_ma) >= 2:
+                    vol_ma_prev20 = float(v4_ma.iloc[-2])
+                    last_vol4 = float(v4.iloc[-1])
+                    vol4h_ok = last_vol4 > (VOL_SPIKE_FACTOR_4H * max(vol_ma_prev20, 1e-12))
+            trig["vol4h_ok"] = bool(vol4h_ok)
+            time.sleep(ex.rateLimit/1000)
+
             # Trendfilter Hauptsignal — NUR 15m & 1h
             up_all, dn_all = True, True
             for tf in TF_FILTERS:
@@ -790,6 +817,8 @@ async def scan_once():
                     prob = prob_score(direction=="LONG", direction=="SHORT",
                                       trig["vol_ok"], up_all or dn_all,
                                       trig["ema200_up"] if direction=="LONG" else trig["ema200_dn"])
+                    if trig.get("vol4h_ok", False):
+                        prob = min(prob+5, 90)
 
                     # ====== HEATMAP START ======
                     hm_bonus = 0
