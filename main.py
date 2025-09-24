@@ -94,7 +94,7 @@ TP3_ATR = 10
 MIN_ATR_PCT        = 0.30
 VOL_SPIKE_FACTOR   = 1.3
 REQUIRE_VOL_SPIKE  = True         # <— Locker: Vol-Spike nicht Pflicht, nur Bonus
-PROB_MIN           = 80            # <— Mindestens 70% Wahrscheinlichkeit
+PROB_MIN           = 70            # <— Mindestens 70% Wahrscheinlichkeit
 COOLDOWN_S         = 600
 
 # === 24h-Mute pro Coin nach gesendetem Signal ===
