@@ -44,7 +44,7 @@ PIVOT_LEFT = 3                    # Pivot width for swings (1h)
 PIVOT_RIGHT = 3
 CLUSTER_PCT = 0.15 / 100.0        # Cluster tolerance (±0.15 %)
 MIN_STRENGTH = 3                  # Minimum number of swings for a strong level
-TP2_FACTOR = 1.20                # TP2 = Entry + 1.2*(TP1-Entry) (symmetrically for shorts)
+TP2_FACTOR = 1.20                 # TP2 = Entry + 1.2*(TP1-Entry) (symmetrically for shorts)
 
 # ====== ATR-Fallback (if S/R not available) ======
 ATR_SL  = 1.5
@@ -478,9 +478,23 @@ async def _startup():
     await send_mode_banner()
     asyncio.create_task(runner())
 
+# ====== TEST-ENDPOINTS ======
+
+@app.get("/test")
+async def test():
+    text = "✅ Test: Bot & Telegram OK — Mode: 30MA + Heatmap + S/R"
+    await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
+    return {"ok": True, "test": True}
+
+@app.get("/scan")
+async def manual_scan():
+    await scan_once()
+    return {"ok": True, "ran": True, "ts": last_scan_report.get("ts")}
+
+@app.get("/status")
+async def status():
+    return {"ok": True, "mode": "30MA_heatmap", "report": last_scan_report}
+
 @app.get("/")
 async def root():
-    return {
-        "ok": True,
-        "mode": "30MA_heatmap"
-    }
+    return {"ok": True, "mode": "30MA_heatmap"}
