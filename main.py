@@ -6,7 +6,7 @@ import pandas as pd
 import pandas_ta as ta
 import ccxt
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -15,10 +15,11 @@ TG_TOKEN   = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
 COINGLASS_URL     = "https://open-api-v4.coinglass.com"
+WEBHOOK_SECRET    = os.getenv("WEBHOOK_SECRET")  # optional für /tv-telegram-relay
 
 if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
-# COINGLASS_API_KEY is optional; if not provided, headmap filtering will be skipped.
+# COINGLASS_API_KEY ist optional; wenn nicht gesetzt, wird die Heatmap nicht gefiltert.
 
 # 25 liquid Spot pairs (MEXC notation "XXX/USDT")
 SYMBOLS = [
@@ -252,7 +253,7 @@ def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFram
             tp2 = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)
             return entry, round(sl_sr,6), round(tp1_sr,6), tp2, None, True
 
-    # Fallback to ATR targets if no S/R
+    # Fallback zu ATR
     if direction == "LONG":
         sl  = round(entry - ATR_SL  * atrv, 6)
         tp1 = round(entry + TP1_ATR * atrv, 6)
@@ -280,7 +281,7 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     else:
         return (False, ok, ["HTF nicht aligned"])
 
-    # Include 30MA break as valid bias
+    # 30MA-Break zählt als Bias
     if direction == "LONG":
         bias_ok = trig["bull"] or trig["long_fast"] or trig["bull30"]
         if bias_ok:
@@ -313,8 +314,7 @@ def build_checklist_for_dir(direction: str, trig: Dict[str, Any], up_all: bool, 
     else:
         return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
 
-    # Safe-Entry (Fib Pullback) deactivated by config
-    # RSI warning
+    # RSI nur Hinweis
     if direction=="LONG":
         if trig["rsi"] > 67:
             warn.append(f"RSI hoch ({trig['rsi']:.1f})")
@@ -383,7 +383,7 @@ async def scan_once():
             trig = analyze_trigger(df5)
             price = trig["price"]
 
-            # Determine direction from CoinGlass 12h liquidity heatmap (if API key provided)
+            # Direction via CoinGlass 12h liquidity heatmap (optional)
             cg_dir = None
             if COINGLASS_API_KEY:
                 base = sym.split("/")[0]
@@ -407,7 +407,6 @@ async def scan_once():
                                 max_idx = max(sum_by_y, key=sum_by_y.get)
                                 if 0 <= max_idx < len(y_axis):
                                     max_price = float(y_axis[max_idx])
-                                    # If largest vol level is above current price -> likely short squeezes (go LONG), else long squeezes (go SHORT)
                                     cg_dir = "LONG" if max_price > price else "SHORT"
                 except Exception:
                     cg_dir = None
@@ -478,7 +477,7 @@ async def _startup():
     await send_mode_banner()
     asyncio.create_task(runner())
 
-# ====== TEST-ENDPOINTS ======
+# ====== TEST & RELAY ENDPOINTS ======
 
 @app.get("/test")
 async def test():
@@ -498,3 +497,44 @@ async def status():
 @app.get("/")
 async def root():
     return {"ok": True, "mode": "30MA_heatmap"}
+
+@app.post("/tv-telegram-relay")
+async def tv_telegram_relay(req: Request):
+    """
+    TradingView Webhook → Telegram.
+    Erwartetes JSON:
+    {
+      "secret": "DEIN_SECRET",      # optional, wenn WEBHOOK_SECRET gesetzt
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "message": "Text ..."
+    }
+    """
+    try:
+        data = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    if WEBHOOK_SECRET:
+        if not isinstance(data, dict) or data.get("secret") != WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized (bad secret)")
+
+    symbol    = data.get("symbol")
+    tf        = data.get("timeframe")
+    direction = data.get("direction")
+    msg       = data.get("message") or data.get("text") or data.get("alert") or ""
+
+    parts = ["📡 *TradingView Alert*"]
+    if symbol:    parts.append(f"• Symbol: `{symbol}`")
+    if tf:        parts.append(f"• TF: `{tf}`")
+    if direction: parts.append(f"• Richtung: *{direction}*")
+    if msg:       parts.append(f"\n{msg}")
+    text = "\n".join(parts)
+
+    try:
+        await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Telegram send failed: {e}")
+
+    return {"ok": True, "forwarded": True}
