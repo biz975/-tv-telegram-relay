@@ -29,11 +29,11 @@ SYMBOLS = [
     "ARB/USDT","OP/USDT","SUI/USDT","INJ/USDT","FIL/USDT",
 ]
 
-# ====== Analysis & Scan ======
-TF_TRIGGER = "5m"                  # Signal timeframe
-TF_FILTERS = ["5m","15m","1h","4h"]  # Trend filters (strict), now including 5m
+# ====== Analyse & Scan ======
+TF_TRIGGER = "5m"                  # Haupt-Timeframe für Entry
+TF_FILTERS = ["5m","15m"]          # Nur 5m + 15m für Trendrichtung
 LOOKBACK = 300
-SCAN_INTERVAL_S = 15 * 60          # Scan every 15 minutes
+SCAN_INTERVAL_S = 15 * 60          # alle 15 Minuten
 
 # ====== Safe-Entry (Disabled, using 30MA break instead) ======
 SAFE_ENTRY_REQUIRED = False        # Disable fib pullback requirement
