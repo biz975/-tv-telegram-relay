@@ -389,7 +389,12 @@ async def scan_once():
                 base = sym.split("/")[0]
                 params = {"symbol": base, "range": "12h"}
                 try:
-                    resp = requests.get(f"{COINGLASS_URL}/api/futures/liquidation/aggregated-heatmap/model1", headers={"CG-API-KEY": COINGLASS_API_KEY}, params=params, timeout=5)
+                    resp = requests.get(
+                        f"{COINGLASS_URL}/api/futures/liquidation/aggregated-heatmap/model1",
+                        headers={"CG-API-KEY": COINGLASS_API_KEY},
+                        params=params,
+                        timeout=5
+                    )
                     data = resp.json()
                     if data.get("code") == 0 and "data" in data:
                         y_axis = data["data"].get("y_axis", [])
@@ -404,7 +409,7 @@ async def scan_once():
                                     max_price = float(y_axis[max_idx])
                                     # If largest vol level is above current price -> likely short squeezes (go LONG), else long squeezes (go SHORT)
                                     cg_dir = "LONG" if max_price > price else "SHORT"
-                except Exception as e:
+                except Exception:
                     cg_dir = None
 
             # Trend filter across timeframes
@@ -450,7 +455,7 @@ async def scan_once():
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"Prob. {prob}% < {PROB_MIN}%"}
             else:
-                reason = f"Kein Setup"
+                reason = "Kein Setup"
                 if cg_dir and not passes:
                     reason = f"Headmap ({cg_dir}) vs Signal mismatch"
                 last_scan_report["symbols"][sym] = {"skip": reason}
@@ -477,5 +482,5 @@ async def _startup():
 async def root():
     return {
         "ok": True,
-        "mode": "30MA_heatmap",
-        "symb
+        "mode": "30MA_heatmap"
+    }
