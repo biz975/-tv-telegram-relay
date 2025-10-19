@@ -14,9 +14,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ====== Config ======
 TG_TOKEN          = os.getenv("TG_TOKEN")
 TG_CHAT_ID        = os.getenv("TG_CHAT_ID")
-COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
+COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")  # optional
 COINGLASS_URL     = "https://open-api-v4.coinglass.com"
-WEBHOOK_SECRET    = os.getenv("WEBHOOK_SECRET")  # optional für /tv-telegram-relay
+WEBHOOK_SECRET    = os.getenv("WEBHOOK_SECRET")     # optional für /tv-telegram-relay
 
 if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
@@ -33,6 +33,15 @@ SYMBOLS = [
 # ====== Analyse & Scan ======
 LOOKBACK        = 300
 SCAN_INTERVAL_S = 15 * 60   # alle 15 Minuten
+
+# ====== Entry-Logik ======
+# Pflicht 1: M15 30MA-Break + Volumen
+# Pflicht 2: Safe-Entry per Fib-Retest (0.5–0.618) auf FIB_CONFIRM_TF
+FIB_CONFIRM_TF      = "5m"          # "5m" oder "15m"
+SAFE_ENTRY_REQUIRED = True          # Fib-Retest Pflicht (False = nur optional)
+FIB_TOL_PCT         = 0.10 / 100.0  # ±0.10 % Toleranz
+PIVOT_LEFT_TRIG     = 3
+PIVOT_RIGHT_TRIG    = 3
 
 # ====== S/R (1h) Settings ======
 SR_TF = "1h"
@@ -55,7 +64,7 @@ PROB_MIN         = 60
 COOLDOWN_S       = 300
 
 bot = Bot(token=TG_TOKEN)
-app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Volume + S/R)")
+app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Fib-Retest + S/R)")
 
 ex = ccxt.mexc({"enableRateLimit": True})
 last_signal: Dict[str, float] = {}
@@ -77,10 +86,11 @@ def atr(h, l, c, length: int = 14):
 def vol_sma(v, length: int = 20):
     return ta.sma(v, length)
 
-def prob_score(vol_ok: bool, ema200_align: bool) -> int:
+def prob_score(vol_ok: bool, ema200_align: bool, safe_ok: bool) -> int:
     base = 70
     base += 5 if vol_ok else 0
     base += 5 if ema200_align else 0
+    base += 5 if safe_ok else 0
     return min(base, 90)
 
 def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame:
@@ -90,10 +100,6 @@ def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame
 
 # ====== Trigger (M15) ======
 def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
-    """
-    ENTRY-Pflicht: 15m 30MA Break + Volumen-Spike.
-    Weitere Filter: EMA200 (auf 15m), ATR, RSI (nur Hinweis).
-    """
     df["ema200"] = ema(df.close, 200)
     df["rsi"]    = rsi(df.close, 14)
     df["atr"]    = atr(df.high, df.low, df.close, 14)
@@ -117,6 +123,56 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
         "rsi": float(df.rsi.iloc[-1]),
     }
 
+# ====== Fib-Retest auf FIB_CONFIRM_TF ======
+def _find_pivots(values: List[float], left: int, right: int, is_high: bool) -> List[int]:
+    idxs, n = [], len(values)
+    for i in range(left, n - right):
+        L = values[i-left:i]
+        R = values[i+1:i+1+right]
+        if is_high:
+            if all(values[i] > x for x in L) and all(values[i] > x for x in R):
+                idxs.append(i)
+        else:
+            if all(values[i] < x for x in L) and all(values[i] < x for x in R):
+                idxs.append(i)
+    return idxs
+
+def last_impulse(df: pd.DataFrame) -> Tuple[Tuple[int,float], Tuple[int,float]] | None:
+    highs = df["high"].values
+    lows  = df["low"].values
+    hi_idx = _find_pivots(list(highs), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, True)
+    lo_idx = _find_pivots(list(lows ), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, False)
+    if not hi_idx or not lo_idx:
+        return None
+    last_hi_i = hi_idx[-1]
+    last_lo_i = lo_idx[-1]
+    if last_lo_i < last_hi_i:
+        return ((last_lo_i, lows[last_lo_i]), (last_hi_i, highs[last_hi_i]))
+    elif last_hi_i < last_lo_i:
+        return ((last_lo_i, lows[last_lo_i]), (last_hi_i, highs[last_hi_i]))
+    return None
+
+def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]], direction: str) -> Tuple[bool, Tuple[float,float]]:
+    (lo_i, lo_v), (hi_i, hi_v) = impulse
+    if hi_i == lo_i:
+        return (False, (0.0, 0.0))
+    if hi_i > lo_i:
+        # Up-Impuls
+        fib50  = lo_v + 0.5   * (hi_v - lo_v)
+        fib618 = lo_v + 0.618 * (hi_v - lo_v)
+        zmin, zmax = sorted([fib50, fib618])
+        zmin *= (1 - FIB_TOL_PCT); zmax *= (1 + FIB_TOL_PCT)
+        ok = (direction == "LONG") and (zmin <= price <= zmax)
+        return (ok, (zmin, zmax))
+    else:
+        # Down-Impuls
+        fib50  = hi_v - 0.5   * (hi_v - lo_v)
+        fib618 = hi_v - 0.618 * (hi_v - lo_v)
+        zmin, zmax = sorted([fib618, fib50])
+        zmin *= (1 - FIB_TOL_PCT); zmax *= (1 + FIB_TOL_PCT)
+        ok = (direction == "SHORT") and (zmin <= price <= zmax)
+        return (ok, (zmin, zmax))
+
 # ====== S/R Levels (1h) ======
 def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
     highs = df["high"].values
@@ -124,44 +180,37 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
     n = len(df)
     swing_highs, swing_lows = [], []
     for i in range(PIVOT_LEFT, n - PIVOT_RIGHT):
-        left  = highs[i-PIVOT_LEFT:i]; right = highs[i+1:i+1+PIVOT_RIGHT]
-        if all(highs[i] > left) and all(highs[i] > right):
+        Lh = highs[i-PIVOT_LEFT:i]; Rh = highs[i+1:i+1+PIVOT_RIGHT]
+        if all(highs[i] > x for x in Lh) and all(highs[i] > x for x in Rh):
             swing_highs.append(highs[i])
-        left  = lows[i-PIVOT_LEFT:i]; right = lows[i+1:i+1+PIVOT_RIGHT]
-        if all(lows[i] < left) and all(lows[i] < right):
+        Ll = lows[i-PIVOT_LEFT:i]; Rl = lows[i+1:i+1+PIVOT_RIGHT]
+        if all(lows[i] < x for x in Ll) and all(lows[i] < x for x in Rl):
             swing_lows.append(lows[i])
 
-    def cluster_levels(values: List[float], tol_pct: float) -> List[Tuple[float,int]]:
+    def cluster(values: List[float], tol_pct: float) -> List[Tuple[float,int]]:
         values = sorted(values)
-        clusters = []
-        if not values:
-            return clusters
-        cluster = [values[0]]
+        if not values: return []
+        clusters, cur = [], [values[0]]
         for x in values[1:]:
-            center = sum(cluster)/len(cluster)
-            if abs(x - center) / center <= tol_pct:
-                cluster.append(x)
+            center = sum(cur)/len(cur)
+            if abs(x - center)/center <= tol_pct:
+                cur.append(x)
             else:
-                clusters.append((sum(cluster)/len(cluster), len(cluster)))
-                cluster = [x]
-        clusters.append((sum(cluster)/len(cluster), len(cluster)))
+                clusters.append((sum(cur)/len(cur), len(cur))); cur = [x]
+        clusters.append((sum(cur)/len(cur), len(cur)))
         clusters.sort(key=lambda t: (t[1], t[0]), reverse=True)
         return clusters
 
-    res_clusters = cluster_levels(swing_highs, CLUSTER_PCT)
-    sup_clusters = cluster_levels(swing_lows , CLUSTER_PCT)
-    return res_clusters, sup_clusters
+    return cluster(swing_highs, CLUSTER_PCT), cluster(swing_lows, CLUSTER_PCT)
 
 def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: str, min_strength: int) -> float | None:
-    candidates = []
+    cands = []
     for price, strength in levels:
         if strength < min_strength: continue
-        if direction == "LONG" and price > ref_price:
-            candidates.append(price)
-        elif direction == "SHORT" and price < ref_price:
-            candidates.append(price)
-    if not candidates: return None
-    return min(candidates) if direction == "LONG" else max(candidates)
+        if direction == "LONG" and price > ref_price:  cands.append(price)
+        if direction == "SHORT" and price < ref_price: cands.append(price)
+    if not cands: return None
+    return min(cands) if direction == "LONG" else max(cands)
 
 def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,float,float,bool]:
     res_lvls, sup_lvls = find_pivots_levels(df_sr)
@@ -191,8 +240,8 @@ def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFram
         tp3 = round(entry - TP3_ATR * atrv, 6)
     return entry, sl, tp1, tp2, tp3, False
 
-# ====== Checkliste (M15 Break ist Pflicht) ======
-def build_checklist(direction: str, trig15: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
+# ====== Checkliste ======
+def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tuple[bool, List[str], List[str]]:
     ok, warn = [], []
 
     atr_pct = (trig15["atr"] / max(trig15["price"], 1e-9)) * 100.0
@@ -212,11 +261,16 @@ def build_checklist(direction: str, trig15: Dict[str, Any]) -> Tuple[bool, List[
     if ema200_ok: ok.append("EMA200 ok")
     else:         return (False, ok, ["EMA200 gegen Setup"])
 
-    # Volumen (zusätzlich abprüfen)
+    # Volumen Pflicht
     if trig15["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA20")
     else:                return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
 
-    # RSI nur Hinweis
+    # Safe-Entry per Fib-Retest (falls Pflicht)
+    if SAFE_ENTRY_REQUIRED:
+        if fib_ok: ok.append(f"Safe-Entry Fib 0.5–0.618 ({FIB_CONFIRM_TF})")
+        else:      return (False, ok, [f"Kein Fib-Retest (0.5–0.618) auf {FIB_CONFIRM_TF}"])
+
+    # RSI Hinweis
     if direction=="LONG":
         if trig15["rsi"] > 67: warn.append(f"RSI hoch ({trig15['rsi']:.1f})")
         else:                  ok.append(f"RSI ok ({trig15['rsi']:.1f})")
@@ -241,7 +295,7 @@ async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp1:
     sr_note = f"S/R {SR_TF}" if used_sr else "ATR-Fallback"
 
     text = (
-        f"🛡 *Scanner Signal* — {symbol} (M15 30MA Break + Vol)\n"
+        f"🛡 *Scanner Signal* — {symbol} (M15 30MA Break + Fib-Retest)\n"
         f"➡️ *{direction}*  ({sr_note})\n"
         f"🎯 Entry: `{entry}`\n"
         f"🛡 SL: `{sl}`\n"
@@ -255,12 +309,11 @@ async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp1:
 
 async def send_mode_banner():
     text = (
-        "🛡 *Scanner gestartet – MODUS: M15 30MA Breakout (mit Volumen) + S/R (1h)*\n"
+        "🛡 *Scanner gestartet – MODUS: M15 30MA Breakout (mit Volumen) + Fib-Retest (0.5–0.618) + S/R (1h)*\n"
         f"• Scan alle 15 Minuten\n"
-        "• Entry: M15 30MA Breakout mit Volumen (Pflicht)\n"
-        f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20\n"
-        f"• ATR%-Schwelle aktiv (≥ {MIN_ATR_PCT:.2f}%)\n"
-        "• TP/SL über 1h Support/Resistance (TP2 = +20% Distanz). Fallback: ATR\n"
+        f"• Fib-Confirm-TF: {FIB_CONFIRM_TF}\n"
+        f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20, ATR% ≥ {MIN_ATR_PCT:.2f}%\n"
+        "• TP/SL via 1h Support/Resistance (TP2 = +20% Distanz), Fallback: ATR"
         + (f"\n• CoinGlass Heatmap 12h (optional): Richtung muss matchen" if COINGLASS_API_KEY else "")
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
@@ -279,7 +332,7 @@ async def scan_once():
             trig15 = analyze_trigger_m15(df15)
             price  = trig15["price"]
 
-            # CoinGlass 12h Heatmap (optional Richtungsfilter)
+            # CoinGlass 12h Heatmap (optional)
             cg_dir = None
             if COINGLASS_API_KEY:
                 base = sym.split("/")[0]
@@ -307,15 +360,25 @@ async def scan_once():
                 except Exception:
                     cg_dir = None
 
-            # Kandidaten nur basierend auf M15 Break Richtung (+ optional Heatmap)
+            # Safe-Entry via Fib-Retest auf FIB_CONFIRM_TF
+            df_fib  = fetch_df(sym, FIB_CONFIRM_TF)
+            impulse = last_impulse(df_fib)
+            fib_ok_L = fib_ok_S = False
+            if impulse is not None:
+                okL, _ = fib_zone_ok(price, impulse, "LONG")
+                okS, _ = fib_zone_ok(price, impulse, "SHORT")
+                fib_ok_L, fib_ok_S = bool(okL), bool(okS)
+
+            # Kandidaten sammeln
             candidates = []
             for direction in ("LONG", "SHORT"):
-                passed, ok_tags, warn_tags = build_checklist(direction, trig15)
+                fib_ok = fib_ok_L if direction=="LONG" else fib_ok_S
+                passed, ok_tags, warn_tags = build_checklist(direction, trig15, fib_ok)
                 if not passed:
                     continue
                 if cg_dir and cg_dir != direction:
                     continue
-                prob = prob_score(trig15["vol_ok"], trig15["ema200_up"] if direction=="LONG" else trig15["ema200_dn"])
+                prob = prob_score(trig15["vol_ok"], trig15["ema200_up"] if direction=="LONG" else trig15["ema200_dn"], fib_ok)
                 candidates.append((direction, prob, ok_tags, warn_tags))
 
             if candidates:
@@ -331,14 +394,15 @@ async def scan_once():
                         "direction": direction, "prob": prob, "throttled": throttled,
                         "ok": ok_tags, "warn": warn_tags,
                         "price": price, "atr": trig15["atr"],
-                        "sr_used": used_sr, "heatmap_dir": cg_dir
+                        "sr_used": used_sr, "heatmap_dir": cg_dir,
+                        "fib_tf": FIB_CONFIRM_TF
                     }
                     if not throttled:
                         await send_signal(sym, direction, entry, sl, tp1, tp2, maybe_tp3, prob, ok_tags, warn_tags, used_sr)
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"Prob. {prob}% < {PROB_MIN}%"}
             else:
-                last_scan_report["symbols"][sym] = {"skip": "Kein Setup (M15 Break mit Volumen nicht erfüllt)"}
+                last_scan_report["symbols"][sym] = {"skip": "Kein Setup (Pflichten nicht erfüllt)"}
 
         except Exception as e:
             last_scan_report["symbols"][sym] = {"error": str(e)}
@@ -362,7 +426,7 @@ async def _startup():
 
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Vol + S/R"
+    text = "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Fib-Retest + S/R"
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True}
 
@@ -373,11 +437,11 @@ async def manual_scan():
 
 @app.get("/status")
 async def status():
-    return {"ok": True, "mode": "m15_break_only", "report": last_scan_report}
+    return {"ok": True, "mode": "m15_break_fib", "report": last_scan_report}
 
 @app.get("/")
 async def root():
-    return {"ok": True, "mode": "m15_break_only"}
+    return {"ok": True, "mode": "m15_break_fib"}
 
 @app.post("/tv-telegram-relay")
 async def tv_telegram_relay(req: Request):
@@ -408,7 +472,7 @@ async def tv_telegram_relay(req: Request):
 
     return {"ok": True, "forwarded": True}
 
-# Auto-Link-Seite (klickbare, korrekte Links zu deiner Domain)
+# Auto-Link-Seite
 @app.get("/links")
 async def links(request: Request):
     base = str(request.base_url).rstrip("/")
@@ -420,7 +484,7 @@ async def links(request: Request):
         <li><a href="{base}/test">Telegram Test</a></li>
         <li><a href="{base}/scan">Sofort-Scan</a></li>
         <li><a href="{base}/status">Letzter Report</a></li>
-        <li><a href="{base}/tv-telegram-relay">TV → Telegram Relay (POST)</a></li>
+        <li><code>POST {base}/tv-telegram-relay</code></li>
         <li><a href="{base}/links">Diese Link-Seite</a></li>
       </ul>
       <h3>cURL-Beispiel für Relay</h3>
