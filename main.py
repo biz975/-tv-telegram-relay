@@ -1,6 +1,6 @@
 import os, asyncio, math
 from datetime import datetime, timezone
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 
 import pandas as pd
 import pandas_ta as ta
@@ -21,7 +21,8 @@ WEBHOOK_SECRET    = os.getenv("WEBHOOK_SECRET")     # optional für /tv-telegram
 if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
-# 25 liquid Spot pairs (MEXC notation "XXX/USDT")
+# 25 liquid Spot pairs (MEXC notation "XXX/USDT") + erweiterte Liste
+# Duplikate werden unten entfernt.
 SYMBOLS = [
     # ==== Ursprüngliche 25 ====
     "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
@@ -37,12 +38,17 @@ SYMBOLS = [
     "PYTH/USDT","MEME/USDT","NOT/USDT","MEW/USDT","ZRO/USDT",
     "ENA/USDT","ORDI/USDT","SATS/USDT","JTO/USDT","HNT/USDT",
     "BLUR/USDT","DEGEN/USDT","OPUL/USDT","ALT/USDT","ACE/USDT",
-    "RUNE/USDT","SKL/USDT","CFX/USDT","DYDX/USDT","SFP/USDT",
+    "RUNE/USDT","SKL/USDT","DYDX/USDT","SFP/USDT",
     "CETUS/USDT","TURBO/USDT","CHEEMS/USDT","CHZ/USDT","AERO/USDT",
     "PENDLE/USDT","STG/USDT","AKT/USDT","KAS/USDT","NTRN/USDT",
     "VET/USDT","FTM/USDT","EOS/USDT","FLOW/USDT","1INCH/USDT",
-    "XTZ/USDT","MINA/USDT","CFX/USDT","MTL/USDT","MASK/USDT"
+    "XTZ/USDT","MINA/USDT","MTL/USDT","MASK/USDT"
 ]
+
+# Duplikate entfernen (z. B. CFX mehrfach)
+# Reihenfolge stabil halten: erstes Auftreten gewinnt
+_seen = set()
+SYMBOLS = [s for s in SYMBOLS if not (s in _seen or _seen.add(s))]
 
 # ====== Analyse & Scan ======
 LOOKBACK        = 300
@@ -51,9 +57,11 @@ SCAN_INTERVAL_S = 15 * 60   # alle 15 Minuten
 # ====== Entry-Logik ======
 # Pflicht 1: M15 30MA-Break + Volumen
 # Pflicht 2: Safe-Entry per Fib-Retest (0.5–0.618) auf FIB_CONFIRM_TF
-FIB_CONFIRM_TF      = "5m"          # "5m" oder "15m"
-SAFE_ENTRY_REQUIRED = True          # Fib-Retest Pflicht (False = nur optional)
-FIB_TOL_PCT         = 0.10 / 100.0  # ±0.10 % Toleranz
+FIB_CONFIRM_TF            = "5m"          # "5m" oder "15m"
+SAFE_ENTRY_REQUIRED       = True          # Fib-Retest Pflicht (False = nur optional)
+FIB_TOL_PCT               = 0.10 / 100.0  # ±0.10 % Toleranz
+FIB_REQUIRE_CANDLE_CLOSE  = True          # <<< NEU: Fib-Confirm NUR mit geschlossener Candle
+
 PIVOT_LEFT_TRIG     = 3
 PIVOT_RIGHT_TRIG    = 3
 
@@ -114,6 +122,7 @@ def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame
 
 # ====== Trigger (M15) ======
 def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
+    df = df.copy()
     df["ema200"] = ema(df.close, 200)
     df["rsi"]    = rsi(df.close, 14)
     df["atr"]    = atr(df.high, df.low, df.close, 14)
@@ -151,7 +160,7 @@ def _find_pivots(values: List[float], left: int, right: int, is_high: bool) -> L
                 idxs.append(i)
     return idxs
 
-def last_impulse(df: pd.DataFrame) -> Tuple[Tuple[int,float], Tuple[int,float]] | None:
+def last_impulse(df: pd.DataFrame) -> Optional[Tuple[Tuple[int,float], Tuple[int,float]]]:
     highs = df["high"].values
     lows  = df["low"].values
     hi_idx = _find_pivots(list(highs), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, True)
@@ -217,7 +226,7 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
 
     return cluster(swing_highs, CLUSTER_PCT), cluster(swing_lows, CLUSTER_PCT)
 
-def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: str, min_strength: int) -> float | None:
+def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: str, min_strength: int) -> Optional[float]:
     cands = []
     for price, strength in levels:
         if strength < min_strength: continue
@@ -226,7 +235,7 @@ def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: s
     if not cands: return None
     return min(cands) if direction == "LONG" else max(cands)
 
-def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,float,float,bool]:
+def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,float,Optional[float],bool]:
     res_lvls, sup_lvls = find_pivots_levels(df_sr)
     if direction == "LONG":
         tp1_sr = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
@@ -301,7 +310,7 @@ def need_throttle(key: str, now: float, cool_s: int = COOLDOWN_S) -> bool:
     last_signal[key] = now
     return False
 
-async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp1: float, tp2: float, tp3: float | None,
+async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp1: float, tp2: float, tp3: Optional[float],
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
     checks_line = ""
     if checklist_ok:   checks_line += f"✅ {', '.join(checklist_ok)}\n"
@@ -377,10 +386,22 @@ async def scan_once():
             # Safe-Entry via Fib-Retest auf FIB_CONFIRM_TF
             df_fib  = fetch_df(sym, FIB_CONFIRM_TF)
             impulse = last_impulse(df_fib)
+
+            # <<< NEU: Preisbasis für Fib je nach Close-Policy
+            if FIB_REQUIRE_CANDLE_CLOSE:
+                # Letzte ABGESCHLOSSENE Candle
+                if len(df_fib) >= 2:
+                    price_fib = float(df_fib["close"].iloc[-2])
+                else:
+                    price_fib = float(df_fib["close"].iloc[-1])
+            else:
+                # Laufende Candle
+                price_fib = float(df_fib["close"].iloc[-1])
+
             fib_ok_L = fib_ok_S = False
             if impulse is not None:
-                okL, _ = fib_zone_ok(price, impulse, "LONG")
-                okS, _ = fib_zone_ok(price, impulse, "SHORT")
+                okL, _ = fib_zone_ok(price_fib, impulse, "LONG")
+                okS, _ = fib_zone_ok(price_fib, impulse, "SHORT")
                 fib_ok_L, fib_ok_S = bool(okL), bool(okS)
 
             # Kandidaten sammeln
@@ -409,7 +430,7 @@ async def scan_once():
                         "ok": ok_tags, "warn": warn_tags,
                         "price": price, "atr": trig15["atr"],
                         "sr_used": used_sr, "heatmap_dir": cg_dir,
-                        "fib_tf": FIB_CONFIRM_TF
+                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE
                     }
                     if not throttled:
                         await send_signal(sym, direction, entry, sl, tp1, tp2, maybe_tp3, prob, ok_tags, warn_tags, used_sr)
@@ -421,7 +442,8 @@ async def scan_once():
         except Exception as e:
             last_scan_report["symbols"][sym] = {"error": str(e)}
         finally:
-            await asyncio.sleep(ex.rateLimit / 1000 if hasattr(ex, "rateLimit") else 0.2)
+            # ccxt rateLimit ist in ms; Sleep verhindert Ban, 0.2 als Fallback
+            await asyncio.sleep(getattr(ex, "rateLimit", 200) / 1000)
 
 # ====== Runner / API ======
 async def runner():
@@ -485,24 +507,3 @@ async def tv_telegram_relay(req: Request):
         raise HTTPException(status_code=500, detail=f"Telegram send failed: {e}")
 
     return {"ok": True, "forwarded": True}
-
-# Auto-Link-Seite
-@app.get("/links")
-async def links(request: Request):
-    base = str(request.base_url).rstrip("/")
-    html = f"""
-    <html><body style="font-family: system-ui; line-height:1.5; padding:16px">
-      <h2>✅ Deine Endpunkte (auto-generiert)</h2>
-      <ul>
-        <li><a href="{base}/">Root / Health</a></li>
-        <li><a href="{base}/test">Telegram Test</a></li>
-        <li><a href="{base}/scan">Sofort-Scan</a></li>
-        <li><a href="{base}/status">Letzter Report</a></li>
-        <li><code>POST {base}/tv-telegram-relay</code></li>
-        <li><a href="{base}/links">Diese Link-Seite</a></li>
-      </ul>
-      <h3>cURL-Beispiel für Relay</h3>
-      <pre>curl -X POST "{base}/tv-telegram-relay" -H "Content-Type: application/json" -d '{{"secret":"DEIN_SECRET","symbol":"BTCUSDT","timeframe":"15m","direction":"LONG","message":"Relay-Test"}}'</pre>
-    </body></html>
-    """
-    return HTMLResponse(content=html)
