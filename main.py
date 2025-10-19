@@ -52,7 +52,7 @@ SYMBOLS = [s for s in SYMBOLS if not (s in _seen or _seen.add(s))]
 
 # ====== Analyse & Scan ======
 LOOKBACK        = 300
-SCAN_INTERVAL_S = 15 * 60   # alle 15 Minuten
+SCAN_INTERVAL_S = 5 * 60   # alle 15 Minuten
 
 # ====== Entry-Logik ======
 # Pflicht 1: M15 30MA-Break + Volumen
