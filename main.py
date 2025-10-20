@@ -21,8 +21,7 @@ WEBHOOK_SECRET    = os.getenv("WEBHOOK_SECRET")     # optional für /tv-telegram
 if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
-# 25 liquid Spot pairs (MEXC notation "XXX/USDT") + erweiterte Liste
-# Duplikate werden unten entfernt.
+# 25 + erweiterte Liste (Duplikate werden unten entfernt)
 SYMBOLS = [
     # ==== Ursprüngliche 25 ====
     "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
@@ -44,15 +43,12 @@ SYMBOLS = [
     "VET/USDT","FTM/USDT","EOS/USDT","FLOW/USDT","1INCH/USDT",
     "XTZ/USDT","MINA/USDT","MTL/USDT","MASK/USDT"
 ]
-
-# Duplikate entfernen (z. B. CFX mehrfach)
-# Reihenfolge stabil halten: erstes Auftreten gewinnt
 _seen = set()
 SYMBOLS = [s for s in SYMBOLS if not (s in _seen or _seen.add(s))]
 
 # ====== Analyse & Scan ======
 LOOKBACK        = 300
-SCAN_INTERVAL_S = 5 * 60   # alle 15 Minuten
+SCAN_INTERVAL_S = 5 * 60   # Intervall (min)
 
 # ====== Entry-Logik ======
 # Pflicht 1: M15 30MA-Break + Volumen
@@ -60,10 +56,10 @@ SCAN_INTERVAL_S = 5 * 60   # alle 15 Minuten
 FIB_CONFIRM_TF            = "5m"          # "5m" oder "15m"
 SAFE_ENTRY_REQUIRED       = True          # Fib-Retest Pflicht (False = nur optional)
 FIB_TOL_PCT               = 0.10 / 100.0  # ±0.10 % Toleranz
-FIB_REQUIRE_CANDLE_CLOSE  = True          # <<< NEU: Fib-Confirm NUR mit geschlossener Candle
+FIB_REQUIRE_CANDLE_CLOSE  = True          # Fib-Confirm NUR mit geschlossener Candle
 
-PIVOT_LEFT_TRIG     = 3
-PIVOT_RIGHT_TRIG    = 3
+PIVOT_LEFT_TRIG  = 3
+PIVOT_RIGHT_TRIG = 3
 
 # ====== S/R (1h) Settings ======
 SR_TF = "1h"
@@ -71,13 +67,13 @@ PIVOT_LEFT = 3
 PIVOT_RIGHT = 3
 CLUSTER_PCT = 0.15 / 100.0
 MIN_STRENGTH = 3
-TP2_FACTOR = 1.20
+TP2_FACTOR = 1.20  # für erweitertes S/R-Ziel (ehem. TP2)
 
 # ====== ATR-Fallback ======
 ATR_SL  = 1.5
 TP1_ATR = 1.0
 TP2_ATR = 1.8
-TP3_ATR = 2.6
+TP3_ATR = 2.6     # wird jetzt als einziger ATR-TP benutzt
 
 # ====== Checklist Settings ======
 MIN_ATR_PCT      = 0.20
@@ -235,33 +231,38 @@ def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: s
     if not cands: return None
     return min(cands) if direction == "LONG" else max(cands)
 
-def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,float,Optional[float],bool]:
+# ---------- NUR 1 TP zurückgeben ----------
+def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,bool]:
+    """
+    Liefert nur noch EIN TP:
+      • S/R: erweitertes Ziel (früher TP2 via TP2_FACTOR)
+      • ATR-Fallback: früherer TP3 (TP3_ATR)
+    Rückgabe: (entry, sl, tp, used_sr)
+    """
     res_lvls, sup_lvls = find_pivots_levels(df_sr)
+
+    # S/R bevorzugt
     if direction == "LONG":
         tp1_sr = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
         sl_sr  = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
         if tp1_sr is not None and sl_sr is not None and tp1_sr > entry and sl_sr < entry:
-            tp2 = round(entry + (tp1_sr - entry) * TP2_FACTOR, 6)
-            return entry, round(sl_sr,6), round(tp1_sr,6), tp2, None, True
+            tp_ext = round(entry + (tp1_sr - entry) * TP2_FACTOR, 6)  # früherer TP2
+            return entry, round(sl_sr,6), tp_ext, True
     else:
         tp1_sr = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
         sl_sr  = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
         if tp1_sr is not None and sl_sr is not None and tp1_sr < entry and sl_sr > entry:
-            tp2 = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)
-            return entry, round(sl_sr,6), round(tp1_sr,6), tp2, None, True
+            tp_ext = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)  # früherer TP2
+            return entry, round(sl_sr,6), tp_ext, True
 
-    # Fallback zu ATR
+    # ATR Fallback → nimm früheren TP3
     if direction == "LONG":
-        sl  = round(entry - ATR_SL  * atrv, 6)
-        tp1 = round(entry + TP1_ATR * atrv, 6)
-        tp2 = round(entry + TP2_ATR * atrv, 6)
-        tp3 = round(entry + TP3_ATR * atrv, 6)
+        sl = round(entry - ATR_SL * atrv, 6)
+        tp = round(entry + TP3_ATR * atrv, 6)
     else:
-        sl  = round(entry + ATR_SL  * atrv, 6)
-        tp1 = round(entry - TP1_ATR * atrv, 6)
-        tp2 = round(entry - TP2_ATR * atrv, 6)
-        tp3 = round(entry - TP3_ATR * atrv, 6)
-    return entry, sl, tp1, tp2, tp3, False
+        sl = round(entry + ATR_SL * atrv, 6)
+        tp = round(entry - TP3_ATR * atrv, 6)
+    return entry, sl, tp, False
 
 # ====== Checkliste ======
 def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tuple[bool, List[str], List[str]]:
@@ -310,7 +311,8 @@ def need_throttle(key: str, now: float, cool_s: int = COOLDOWN_S) -> bool:
     last_signal[key] = now
     return False
 
-async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp1: float, tp2: float, tp3: Optional[float],
+# ---------- Signal mit EINEM TP ----------
+async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp: float,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
     checks_line = ""
     if checklist_ok:   checks_line += f"✅ {', '.join(checklist_ok)}\n"
@@ -322,10 +324,8 @@ async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp1:
         f"➡️ *{direction}*  ({sr_note})\n"
         f"🎯 Entry: `{entry}`\n"
         f"🛡 SL: `{sl}`\n"
-        f"🏁 TP1: `{tp1}`\n"
-        f"🏁 TP2: `{tp2}`\n"
-        + (f"🏁 TP3: `{tp3}`\n" if tp3 is not None else "")
-        + f"📈 Wahrscheinlichkeit: *{prob}%*\n"
+        f"🏁 TP: `{tp}`\n"
+        f"📈 Wahrscheinlichkeit: *{prob}%*\n"
         f"{checks_line}".strip()
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
@@ -333,10 +333,10 @@ async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp1:
 async def send_mode_banner():
     text = (
         "🛡 *Scanner gestartet – MODUS: M15 30MA Breakout (mit Volumen) + Fib-Retest (0.5–0.618) + S/R (1h)*\n"
-        f"• Scan alle 15 Minuten\n"
-        f"• Fib-Confirm-TF: {FIB_CONFIRM_TF}\n"
+        f"• Scan-Intervall: {SCAN_INTERVAL_S//60} Minuten\n"
+        f"• Fib-Confirm-TF: {FIB_CONFIRM_TF} (Close={'Yes' if FIB_REQUIRE_CANDLE_CLOSE else 'Live'})\n"
         f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20, ATR% ≥ {MIN_ATR_PCT:.2f}%\n"
-        "• TP/SL via 1h Support/Resistance (TP2 = +20% Distanz), Fallback: ATR"
+        "• Ziel: Einziger TP (S/R: erweitertes Ziel; ATR: früherer TP3)"
         + (f"\n• CoinGlass Heatmap 12h (optional): Richtung muss matchen" if COINGLASS_API_KEY else "")
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
@@ -387,15 +387,10 @@ async def scan_once():
             df_fib  = fetch_df(sym, FIB_CONFIRM_TF)
             impulse = last_impulse(df_fib)
 
-            # <<< NEU: Preisbasis für Fib je nach Close-Policy
+            # Preisbasis für Fib je nach Close-Policy
             if FIB_REQUIRE_CANDLE_CLOSE:
-                # Letzte ABGESCHLOSSENE Candle
-                if len(df_fib) >= 2:
-                    price_fib = float(df_fib["close"].iloc[-2])
-                else:
-                    price_fib = float(df_fib["close"].iloc[-1])
+                price_fib = float(df_fib["close"].iloc[-2]) if len(df_fib) >= 2 else float(df_fib["close"].iloc[-1])
             else:
-                # Laufende Candle
                 price_fib = float(df_fib["close"].iloc[-1])
 
             fib_ok_L = fib_ok_S = False
@@ -420,7 +415,7 @@ async def scan_once():
                 direction, prob, ok_tags, warn_tags = sorted(candidates, key=lambda x: x[1], reverse=True)[0]
                 if prob >= PROB_MIN:
                     df_sr = fetch_df(sym, SR_TF, limit=LOOKBACK)
-                    entry, sl, tp1, tp2, maybe_tp3, used_sr = make_levels_sr(direction, price, trig15["atr"], df_sr)
+                    entry, sl, tp, used_sr = make_levels_sr(direction, price, trig15["atr"], df_sr)
 
                     key = f"{sym}:{direction}"
                     throttled = need_throttle(key, now)
@@ -433,7 +428,7 @@ async def scan_once():
                         "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE
                     }
                     if not throttled:
-                        await send_signal(sym, direction, entry, sl, tp1, tp2, maybe_tp3, prob, ok_tags, warn_tags, used_sr)
+                        await send_signal(sym, direction, entry, sl, tp, prob, ok_tags, warn_tags, used_sr)
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"Prob. {prob}% < {PROB_MIN}%"}
             else:
@@ -442,7 +437,6 @@ async def scan_once():
         except Exception as e:
             last_scan_report["symbols"][sym] = {"error": str(e)}
         finally:
-            # ccxt rateLimit ist in ms; Sleep verhindert Ban, 0.2 als Fallback
             await asyncio.sleep(getattr(ex, "rateLimit", 200) / 1000)
 
 # ====== Runner / API ======
@@ -462,7 +456,7 @@ async def _startup():
 
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Fib-Retest + S/R"
+    text = "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Fib-Retest + S/R (1 TP)"
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True}
 
@@ -473,11 +467,11 @@ async def manual_scan():
 
 @app.get("/status")
 async def status():
-    return {"ok": True, "mode": "m15_break_fib", "report": last_scan_report}
+    return {"ok": True, "mode": "m15_break_fib_single_tp", "report": last_scan_report}
 
 @app.get("/")
 async def root():
-    return {"ok": True, "mode": "m15_break_fib"}
+    return {"ok": True, "mode": "m15_break_fib_single_tp"}
 
 @app.post("/tv-telegram-relay")
 async def tv_telegram_relay(req: Request):
@@ -507,3 +501,24 @@ async def tv_telegram_relay(req: Request):
         raise HTTPException(status_code=500, detail=f"Telegram send failed: {e}")
 
     return {"ok": True, "forwarded": True}
+
+# Auto-Link-Seite (klickbare, korrekte Links zu deiner Domain)
+@app.get("/links")
+async def links(request: Request):
+    base = str(request.base_url).rstrip("/")
+    html = f"""
+    <html><body style="font-family: system-ui; line-height:1.5; padding:16px">
+      <h2>✅ Deine Endpunkte (auto-generiert)</h2>
+      <ul>
+        <li><a href="{base}/">Root / Health</a></li>
+        <li><a href="{base}/test">Telegram Test</a></li>
+        <li><a href="{base}/scan">Sofort-Scan</a></li>
+        <li><a href="{base}/status">Letzter Report</a></li>
+        <li><a href="{base}/tv-telegram-relay">TV → Telegram Relay (POST)</a></li>
+        <li><a href="{base}/links">Diese Link-Seite</a></li>
+      </ul>
+      <h3>cURL-Beispiel für Relay</h3>
+      <pre>curl -X POST "{base}/tv-telegram-relay" -H "Content-Type: application/json" -d '{{"secret":"DEIN_SECRET","symbol":"BTCUSDT","timeframe":"15m","direction":"LONG","message":"Relay-Test"}}'</pre>
+    </body></html>
+    """
+    return HTMLResponse(content=html)
