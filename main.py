@@ -311,23 +311,22 @@ def need_throttle(key: str, now: float, cool_s: int = COOLDOWN_S) -> bool:
     last_signal[key] = now
     return False
 
-# ---------- Signal mit EINEM TP ----------
+# ---------- Minimalistisches Signal ----------
 async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp: float,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
-    checks_line = ""
-    if checklist_ok:   checks_line += f"✅ {', '.join(checklist_ok)}\n"
-    if checklist_warn: checks_line += f"⚠️ {', '.join(checklist_warn)}\n"
-    sr_note = f"S/R {SR_TF}" if used_sr else "ATR-Fallback"
+    # Richtung & Icon
+    arrow = "🟢 LONG" if direction.upper() == "LONG" else "🔴 SHORT"
 
+    # Kompakter, stylischer Signaltext
     text = (
-        f"🛡 *Scanner Signal* — {symbol} (M15 30MA Break + Fib-Retest)\n"
-        f"➡️ *{direction}*  ({sr_note})\n"
+        f"🛡 *Scanner Signal* — {symbol}\n"
+        f"➡️ {arrow}\n"
         f"🎯 Entry: `{entry}`\n"
-        f"🛡 SL: `{sl}`\n"
         f"🏁 TP: `{tp}`\n"
-        f"📈 Wahrscheinlichkeit: *{prob}%*\n"
-        f"{checks_line}".strip()
+        f"🛡 SL: `{sl}`\n"
+        f"📈 Wahrscheinlichkeit: *{prob}%*"
     )
+
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
 async def send_mode_banner():
