@@ -80,16 +80,16 @@ MIN_ATR_PCT = 0.20
 MAX_ATR_PCT = 3.00   # 🚫 zu hohe Vola (z. B. News) vermeiden
 
 # ====== Weitere Filter ======
-VOL_SPIKE_FACTOR      = 1.25            # für M15-Break
+VOL_SPIKE_FACTOR      = 1.20            # für M15-Break
 REQUIRE_HTF_EMA200    = True            # 4h-Bias muss matchen
 LIQ_FILTER_ENABLED    = True
-LIQ_MIN_QUOTE_USDT    = 10_000_000      # min. 24h QuoteVol
+LIQ_MIN_QUOTE_USDT    = 3_000_000      # min. 24h QuoteVol
 TIME_FILTER_ENABLED   = True
 # erlaube nur diese UTC-Stunden (z. B. 01–23 = erste Stunde auslassen)
 ALLOWED_UTC_HOURS     = set(range(1,24))
 
 PROB_MIN         = 60
-COOLDOWN_S       = 12 * 3600   # ✅ 12h Cooldown
+COOLDOWN_S       = 6 * 3600   # ✅ 12h Cooldown
 
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Fib-Retest + S/R)")
