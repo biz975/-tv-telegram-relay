@@ -58,6 +58,10 @@ SAFE_ENTRY_REQUIRED       = True          # Fib-Retest Pflicht (False = nur opti
 FIB_TOL_PCT               = 0.10 / 100.0  # ±0.10 % Toleranz
 FIB_REQUIRE_CANDLE_CLOSE  = True          # Fib-Confirm NUR mit geschlossener Candle
 
+# 💡 NEU: Strikter MA30-Break + 1-Candle-Bestätigung & Volumen-Delay
+REQUIRE_STRICT_MA30_CLOSE = True          # Break auf Candle -2 + Bestätigung auf Candle -1
+VOLUME_CONFIRM_DELAY      = 1             # Volumenprüfung auf Break-Candle (−2)
+
 PIVOT_LEFT_TRIG  = 3
 PIVOT_RIGHT_TRIG = 3
 
@@ -77,9 +81,9 @@ TP3_ATR = 2.6     # wird jetzt als einziger ATR-TP benutzt
 
 # ====== Checklist Settings ======
 MIN_ATR_PCT      = 0.20
-VOL_SPIKE_FACTOR = 1.20
+VOL_SPIKE_FACTOR = 1.10
 PROB_MIN         = 60
-COOLDOWN_S       = 86400
+COOLDOWN_S       = 12 * 3600   # ✅ 12h Cooldown
 
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Fib-Retest + S/R)")
@@ -125,11 +129,24 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
     df["volma"]  = vol_sma(df.volume, 20)
     df["sma30"]  = sma(df.close, 30)
 
-    c, v = df.close, df.volume
-    vol_ok = v.iloc[-1] > (VOL_SPIKE_FACTOR * df.volma.iloc[-1])
+    c, v, ma30, vma = df.close, df.volume, df.sma30, df.volma
 
-    bull30 = (c.iloc[-2] < df.sma30.iloc[-2]) and (c.iloc[-1] > df.sma30.iloc[-1]) and vol_ok
-    bear30 = (c.iloc[-2] > df.sma30.iloc[-2]) and (c.iloc[-1] < df.sma30.iloc[-1]) and vol_ok
+    # --- Volumenprüfung mit Delay (Break-Candle: −2) ---
+    vol_idx = -2 if VOLUME_CONFIRM_DELAY >= 1 and len(v) >= 2 else -1
+    vol_ok = v.iloc[vol_idx] > (VOL_SPIKE_FACTOR * vma.iloc[vol_idx])
+
+    # --- Strenger Break: Kreuz auf Candle −2, Bestätigung Candle −1 ---
+    if REQUIRE_STRICT_MA30_CLOSE and len(c) >= 3:
+        bull_break = (c.iloc[-3] <= ma30.iloc[-3]) and (c.iloc[-2] >  ma30.iloc[-2])  # Break-Candle
+        bear_break = (c.iloc[-3] >= ma30.iloc[-3]) and (c.iloc[-2] <  ma30.iloc[-2])
+        bull_conf  = (c.iloc[-1] >  ma30.iloc[-1])                                     # Confirm-Candle
+        bear_conf  = (c.iloc[-1] <  ma30.iloc[-1])
+        bull30 = bull_break and bull_conf and vol_ok
+        bear30 = bear_break and bear_conf and vol_ok
+    else:
+        # klassische Variante (ohne Bestätigungs-Candle)
+        bull30 = (c.iloc[-2] < ma30.iloc[-2]) and (c.iloc[-1] > ma30.iloc[-1]) and vol_ok
+        bear30 = (c.iloc[-2] > ma30.iloc[-2]) and (c.iloc[-1] < ma30.iloc[-1]) and vol_ok
 
     return {
         "bull30": bool(bull30),
