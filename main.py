@@ -22,28 +22,26 @@ if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
 # 25 + erweiterte Liste (Duplikate werden unten entfernt)
-SYMBOLS = SYMBOLS = [
-"BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
-"TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT",
-"TRX/USDT","DOT/USDT","MATIC/USDT","SHIB/USDT","PEPE/USDT",
-"LTC/USDT","BCH/USDT","ATOM/USDT","NEAR/USDT","APT/USDT",
-"ARB/USDT","OP/USDT","SUI/USDT","INJ/USDT","FIL/USDT",
-"HBAR/USDT","CRV/USDT","CAKE/USDT","WLD/USDT","XLM/USDT",
-"TIA/USDT","CFX/USDT","WIF/USDT","TRUMP/USDT","BONK/USDT",
-"SEI/USDT","GALA/USDT","RNDR/USDT","AR/USDT","JUP/USDT",
-"PYTH/USDT","MEME/USDT","NOT/USDT","MEW/USDT","ZRO/USDT",
-"ENA/USDT","ORDI/USDT","SATS/USDT","JTO/USDT","HNT/USDT",
-"BLUR/USDT","DEGEN/USDT","OPUL/USDT","ALT/USDT","ACE/USDT",
-"RUNE/USDT","SKL/USDT","DYDX/USDT","SFP/USDT","CETUS/USDT",
-"TURBO/USDT","CHEEMS/USDT","CHZ/USDT","AERO/USDT","PENDLE/USDT",
-"STG/USDT","AKT/USDT","KAS/USDT","NTRN/USDT","VET/USDT",
-"FTM/USDT","EOS/USDT","FLOW/USDT","1INCH/USDT","XTZ/USDT",
-"MINA/USDT","MTL/USDT","MASK/USDT","APE/USDT","SAND/USDT",
-"AXS/USDT","GMT/USDT","IMX/USDT","LDO/USDT","GMX/USDT",
-"STRK/USDT","FLOKI/USDT","BOME/USDT","TWT/USDT","C98/USDT",
-"RSR/USDT","KAVA/USDT","CELO/USDT","SXP/USDT","SUSHI/USDT",
-"YFI/USDT","COMP/USDT","AAVE/USDT","LRC/USDT","GRT/USDT",
-"ENS/USDT","NEO/USDT","QTUM/USDT","IOTA/USDT","IOTX/USDT"
+SYMBOLS = [
+    # ==== Ursprüngliche 25 ====
+    "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
+    "TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT",
+    "TRX/USDT","DOT/USDT","MATIC/USDT","SHIB/USDT","PEPE/USDT",
+    "LTC/USDT","BCH/USDT","ATOM/USDT","NEAR/USDT","APT/USDT",
+    "ARB/USDT","OP/USDT","SUI/USDT","INJ/USDT","FIL/USDT",
+
+    # ==== Erweiterte 50 ====
+    "HBAR/USDT","CRV/USDT","CAKE/USDT","WLD/USDT","XLM/USDT",
+    "TIA/USDT","CFX/USDT","WIF/USDT","TRUMP/USDT","BONK/USDT",
+    "SEI/USDT","GALA/USDT","RNDR/USDT","AR/USDT","JUP/USDT",
+    "PYTH/USDT","MEME/USDT","NOT/USDT","MEW/USDT","ZRO/USDT",
+    "ENA/USDT","ORDI/USDT","SATS/USDT","JTO/USDT","HNT/USDT",
+    "BLUR/USDT","DEGEN/USDT","OPUL/USDT","ALT/USDT","ACE/USDT",
+    "RUNE/USDT","SKL/USDT","DYDX/USDT","SFP/USDT",
+    "CETUS/USDT","TURBO/USDT","CHEEMS/USDT","CHZ/USDT","AERO/USDT",
+    "PENDLE/USDT","STG/USDT","AKT/USDT","KAS/USDT","NTRN/USDT",
+    "VET/USDT","FTM/USDT","EOS/USDT","FLOW/USDT","1INCH/USDT",
+    "XTZ/USDT","MINA/USDT","MTL/USDT","MASK/USDT"
 ]
 _seen = set()
 SYMBOLS = [s for s in SYMBOLS if not (s in _seen or _seen.add(s))]
@@ -79,9 +77,10 @@ TP3_ATR = 2.6     # wird jetzt als einziger ATR-TP benutzt
 
 # ====== Checklist Settings ======
 MIN_ATR_PCT      = 0.20
-VOL_SPIKE_FACTOR = 1.20
+VOL_SPIKE_MIN    = 1.12     # Mindestvolumen (12 % über MA20)
+VOL_SPIKE_MAX    = 1.40     # Maximalvolumen (40 % über MA20) – schützt vor Blowoff-Spikes
 PROB_MIN         = 60
-COOLDOWN_S       = 300
+COOLDOWN_S       = 86400    # 24 Stunden Cooldown pro Coin+Richtung
 
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Fib-Retest + S/R)")
@@ -128,14 +127,29 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
     df["sma30"]  = sma(df.close, 30)
 
     c, v = df.close, df.volume
-    vol_ok = v.iloc[-1] > (VOL_SPIKE_FACTOR * df.volma.iloc[-1])
 
+    # Volumen-Range-Filter
+    vol_spike = v.iloc[-1] / max(df.volma.iloc[-1], 1e-9)
+    vol_ok = (VOL_SPIKE_MIN <= vol_spike <= VOL_SPIKE_MAX)
+
+    # 30MA Breakout mit Volumen
     bull30 = (c.iloc[-2] < df.sma30.iloc[-2]) and (c.iloc[-1] > df.sma30.iloc[-1]) and vol_ok
     bear30 = (c.iloc[-2] > df.sma30.iloc[-2]) and (c.iloc[-1] < df.sma30.iloc[-1]) and vol_ok
 
+    # Blowoff-Docht-Filter (vermeidet Überhitzungskerzen)
+    hi, lo, cl = df.high.iloc[-1], df.low.iloc[-1], df.close.iloc[-1]
+    rng = max(hi - lo, 1e-9)
+    upper_wick = hi - cl
+    lower_wick = cl - lo
+    no_blowoff_long  = (upper_wick <= 0.40 * rng)
+    no_blowoff_short = (lower_wick <= 0.40 * rng)
+
+    bull30 = bool(bull30 and no_blowoff_long)
+    bear30 = bool(bear30 and no_blowoff_short)
+
     return {
-        "bull30": bool(bull30),
-        "bear30": bool(bear30),
+        "bull30": bull30,
+        "bear30": bear30,
         "vol_ok": bool(vol_ok),
         "atr": float(df.atr.iloc[-1]),
         "price": float(c.iloc[-1]),
@@ -287,9 +301,11 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
     if ema200_ok: ok.append("EMA200 ok")
     else:         return (False, ok, ["EMA200 gegen Setup"])
 
-    # Volumen Pflicht
-    if trig15["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA20")
-    else:                return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
+    # Volumen Pflicht (Range)
+    if trig15["vol_ok"]:
+        ok.append(f"Volumen in Range {VOL_SPIKE_MIN:.2f}–{VOL_SPIKE_MAX:.2f}× MA20")
+    else:
+        return (False, ok, [f"Volumen außerhalb Range ({VOL_SPIKE_MIN:.2f}–{VOL_SPIKE_MAX:.2f}× MA20 Pflicht)"])
 
     # Safe-Entry per Fib-Retest (falls Pflicht)
     if SAFE_ENTRY_REQUIRED:
@@ -336,7 +352,7 @@ async def send_mode_banner():
         "🛡 *Scanner gestartet – MODUS: M15 30MA Breakout (mit Volumen) + Fib-Retest (0.5–0.618) + S/R (1h)*\n"
         f"• Scan-Intervall: {SCAN_INTERVAL_S//60} Minuten\n"
         f"• Fib-Confirm-TF: {FIB_CONFIRM_TF} (Close={'Yes' if FIB_REQUIRE_CANDLE_CLOSE else 'Live'})\n"
-        f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20, ATR% ≥ {MIN_ATR_PCT:.2f}%\n"
+        f"• Volumen: Pflicht zwischen {VOL_SPIKE_MIN:.2f}× und {VOL_SPIKE_MAX:.2f}× MA20, ATR% ≥ {MIN_ATR_PCT:.2f}%\n"
         "• Ziel: Einziger TP (S/R: erweitertes Ziel; ATR: früherer TP3)"
         + (f"\n• CoinGlass Heatmap 12h (optional): Richtung muss matchen" if COINGLASS_API_KEY else "")
     )
