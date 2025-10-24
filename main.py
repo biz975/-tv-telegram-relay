@@ -209,6 +209,22 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         ok = (direction == "SHORT") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
 
+# ===== Zusatz: Volumen-Bestätigung beim Fib-Retest (nur auf Retest-TF, z. B. 5m) =====
+def fib_retest_with_vol(df5m: pd.DataFrame, direction: str, base_ok: bool) -> bool:
+    """
+    Ergänzt den Fib-Retest um Volumen-Bestätigung:
+    Nur gültig, wenn letzte Candle-Volume > 90%-Quantil der letzten ~60 Bars.
+    """
+    if not base_ok:
+        return False
+    try:
+        vol_last = float(df5m["volume"].iloc[-1])
+        vol_q90  = float(df5m["volume"].rolling(60, min_periods=10).quantile(0.90).iloc[-1])
+        return vol_last > vol_q90
+    except Exception:
+        # Fallback: falls Rolling/Quantile fehlschlägt → belasse ursprünglichen Status
+        return base_ok
+
 # ====== S/R Levels (1h) ======
 def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
     highs = df["high"].values
@@ -302,7 +318,7 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
     if ema200_ok: ok.append("EMA200 ok")
     else:         return (False, ok, ["EMA200 gegen Setup"])
 
-    # Volumen Pflicht
+    # Volumen Pflicht (M15 Break)
     if trig15["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA20")
     else:                return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
 
@@ -414,6 +430,12 @@ async def scan_once():
                 okL, _ = fib_zone_ok(price_fib, impulse, "LONG")
                 okS, _ = fib_zone_ok(price_fib, impulse, "SHORT")
                 fib_ok_L, fib_ok_S = bool(okL), bool(okS)
+
+            # ✅ Nur Volumen-Bestätigung beim Fib-Retest (auf Retest-TF, z. B. 5m)
+            if fib_ok_L:
+                fib_ok_L = fib_retest_with_vol(df_fib, "LONG", fib_ok_L)
+            if fib_ok_S:
+                fib_ok_S = fib_retest_with_vol(df_fib, "SHORT", fib_ok_S)
 
             # Kandidaten sammeln
             candidates = []
