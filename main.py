@@ -80,7 +80,7 @@ MIN_ATR_PCT = 0.20
 MAX_ATR_PCT = 3.00   # 🚫 zu hohe Vola (z. B. News) vermeiden
 
 # ====== Weitere Filter ======
-VOL_SPIKE_FACTOR      = 1.20            # für M15-Break
+VOL_SPIKE_FACTOR      = 1.10            # für M15-Break
 REQUIRE_HTF_EMA200    = True            # 4h-Bias muss matchen
 LIQ_FILTER_ENABLED    = True
 LIQ_MIN_QUOTE_USDT    = 3_000_000      # min. 24h QuoteVol
