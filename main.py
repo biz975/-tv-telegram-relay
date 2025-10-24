@@ -81,7 +81,7 @@ TP3_ATR = 2.6     # wird jetzt als einziger ATR-TP benutzt
 
 # ====== Checklist Settings ======
 MIN_ATR_PCT      = 0.20
-VOL_SPIKE_FACTOR = 1.10
+VOL_SPIKE_FACTOR = 1.20
 PROB_MIN         = 60
 COOLDOWN_S       = 12 * 3600   # ✅ 12h Cooldown
 
