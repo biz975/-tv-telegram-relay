@@ -22,26 +22,28 @@ if not TG_TOKEN or not TG_CHAT_ID:
     raise RuntimeError("Missing TG_TOKEN or TG_CHAT_ID environment variables.")
 
 # 25 + erweiterte Liste (Duplikate werden unten entfernt)
-SYMBOLS = [
-    # ==== Ursprüngliche 25 ====
-    "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
-    "TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT",
-    "TRX/USDT","DOT/USDT","MATIC/USDT","SHIB/USDT","PEPE/USDT",
-    "LTC/USDT","BCH/USDT","ATOM/USDT","NEAR/USDT","APT/USDT",
-    "ARB/USDT","OP/USDT","SUI/USDT","INJ/USDT","FIL/USDT",
-
-    # ==== Erweiterte 50 ====
-    "HBAR/USDT","CRV/USDT","CAKE/USDT","WLD/USDT","XLM/USDT",
-    "TIA/USDT","CFX/USDT","WIF/USDT","TRUMP/USDT","BONK/USDT",
-    "SEI/USDT","GALA/USDT","RNDR/USDT","AR/USDT","JUP/USDT",
-    "PYTH/USDT","MEME/USDT","NOT/USDT","MEW/USDT","ZRO/USDT",
-    "ENA/USDT","ORDI/USDT","SATS/USDT","JTO/USDT","HNT/USDT",
-    "BLUR/USDT","DEGEN/USDT","OPUL/USDT","ALT/USDT","ACE/USDT",
-    "RUNE/USDT","SKL/USDT","DYDX/USDT","SFP/USDT",
-    "CETUS/USDT","TURBO/USDT","CHEEMS/USDT","CHZ/USDT","AERO/USDT",
-    "PENDLE/USDT","STG/USDT","AKT/USDT","KAS/USDT","NTRN/USDT",
-    "VET/USDT","FTM/USDT","EOS/USDT","FLOW/USDT","1INCH/USDT",
-    "XTZ/USDT","MINA/USDT","MTL/USDT","MASK/USDT"
+SYMBOLS = SYMBOLS = [
+"BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
+"TON/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT",
+"TRX/USDT","DOT/USDT","MATIC/USDT","SHIB/USDT","PEPE/USDT",
+"LTC/USDT","BCH/USDT","ATOM/USDT","NEAR/USDT","APT/USDT",
+"ARB/USDT","OP/USDT","SUI/USDT","INJ/USDT","FIL/USDT",
+"HBAR/USDT","CRV/USDT","CAKE/USDT","WLD/USDT","XLM/USDT",
+"TIA/USDT","CFX/USDT","WIF/USDT","TRUMP/USDT","BONK/USDT",
+"SEI/USDT","GALA/USDT","RNDR/USDT","AR/USDT","JUP/USDT",
+"PYTH/USDT","MEME/USDT","NOT/USDT","MEW/USDT","ZRO/USDT",
+"ENA/USDT","ORDI/USDT","SATS/USDT","JTO/USDT","HNT/USDT",
+"BLUR/USDT","DEGEN/USDT","OPUL/USDT","ALT/USDT","ACE/USDT",
+"RUNE/USDT","SKL/USDT","DYDX/USDT","SFP/USDT","CETUS/USDT",
+"TURBO/USDT","CHEEMS/USDT","CHZ/USDT","AERO/USDT","PENDLE/USDT",
+"STG/USDT","AKT/USDT","KAS/USDT","NTRN/USDT","VET/USDT",
+"FTM/USDT","EOS/USDT","FLOW/USDT","1INCH/USDT","XTZ/USDT",
+"MINA/USDT","MTL/USDT","MASK/USDT","APE/USDT","SAND/USDT",
+"AXS/USDT","GMT/USDT","IMX/USDT","LDO/USDT","GMX/USDT",
+"STRK/USDT","FLOKI/USDT","BOME/USDT","TWT/USDT","C98/USDT",
+"RSR/USDT","KAVA/USDT","CELO/USDT","SXP/USDT","SUSHI/USDT",
+"YFI/USDT","COMP/USDT","AAVE/USDT","LRC/USDT","GRT/USDT",
+"ENS/USDT","NEO/USDT","QTUM/USDT","IOTA/USDT","IOTX/USDT"
 ]
 _seen = set()
 SYMBOLS = [s for s in SYMBOLS if not (s in _seen or _seen.add(s))]
@@ -58,10 +60,6 @@ SAFE_ENTRY_REQUIRED       = True          # Fib-Retest Pflicht (False = nur opti
 FIB_TOL_PCT               = 0.10 / 100.0  # ±0.10 % Toleranz
 FIB_REQUIRE_CANDLE_CLOSE  = True          # Fib-Confirm NUR mit geschlossener Candle
 
-# 💡 M15-Break (Pflicht)
-REQUIRE_STRICT_MA30_CLOSE = True          # Break auf Candle -2 + Bestätigung auf Candle -1
-VOLUME_CONFIRM_DELAY      = 1             # Volumenprüfung auf Break-Candle (−2)
-
 PIVOT_LEFT_TRIG  = 3
 PIVOT_RIGHT_TRIG = 3
 
@@ -73,23 +71,17 @@ CLUSTER_PCT = 0.15 / 100.0
 MIN_STRENGTH = 3
 TP2_FACTOR = 1.20  # für erweitertes S/R-Ziel (ehem. TP2)
 
-# ====== ATR / Risk ======
-ATR_SL   = 1.5
-TP3_ATR  = 2.6
-MIN_ATR_PCT = 0.20
-MAX_ATR_PCT = 5.00   # 🚫 zu hohe Vola (z. B. News) vermeiden
+# ====== ATR-Fallback ======
+ATR_SL  = 1.5
+TP1_ATR = 1.0
+TP2_ATR = 1.8
+TP3_ATR = 2.6     # wird jetzt als einziger ATR-TP benutzt
 
-# ====== Weitere Filter ======
-VOL_SPIKE_FACTOR      = 1.10            # für M15-Break
-REQUIRE_HTF_EMA200    = True            # 4h-Bias muss matchen
-LIQ_FILTER_ENABLED    = True
-LIQ_MIN_QUOTE_USDT    = 2_000_000      # min. 24h QuoteVol
-TIME_FILTER_ENABLED   = False
-# erlaube nur diese UTC-Stunden (z. B. 01–23 = erste Stunde auslassen)
-ALLOWED_UTC_HOURS     = set(range(1,24))
-
+# ====== Checklist Settings ======
+MIN_ATR_PCT      = 0.20
+VOL_SPIKE_FACTOR = 1.20
 PROB_MIN         = 60
-COOLDOWN_S       = 6 * 3600   # ✅ 12h Cooldown
+COOLDOWN_S       = 300
 
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Fib-Retest + S/R)")
@@ -99,11 +91,20 @@ last_signal: Dict[str, float] = {}
 last_scan_report: Dict[str, Any] = {"ts": None, "symbols": {}}
 
 # ====== TA Helpers ======
-def ema(series: pd.Series, length: int): return ta.ema(series, length)
-def sma(series: pd.Series, length: int): return ta.sma(series, length)
-def rsi(series: pd.Series, length: int = 14): return ta.rsi(series, length)
-def atr(h, l, c, length: int = 14): return ta.atr(h, l, c, length)
-def vol_sma(v, length: int = 20): return ta.sma(v, length)
+def ema(series: pd.Series, length: int):
+    return ta.ema(series, length)
+
+def sma(series: pd.Series, length: int):
+    return ta.sma(series, length)
+
+def rsi(series: pd.Series, length: int = 14):
+    return ta.rsi(series, length)
+
+def atr(h, l, c, length: int = 14):
+    return ta.atr(h, l, c, length)
+
+def vol_sma(v, length: int = 20):
+    return ta.sma(v, length)
 
 def prob_score(vol_ok: bool, ema200_align: bool, safe_ok: bool) -> int:
     base = 70
@@ -117,32 +118,6 @@ def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame
     df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
     return df
 
-# ====== Helper: HTF-Bias (4h EMA200) ======
-def get_htf_bias(symbol: str) -> Optional[str]:
-    try:
-        df4h = fetch_df(symbol, "4h")
-        df4h["ema200"] = ema(df4h.close, 200)
-        c = float(df4h["close"].iloc[-1])
-        e = float(df4h["ema200"].iloc[-1])
-        if c > e:  return "LONG"
-        if c < e:  return "SHORT"
-    except Exception:
-        return None
-    return None
-
-# ====== Helper: Liquiditäts-Filter (24h QuoteVol) ======
-def pass_liquidity(symbol: str) -> bool:
-    if not LIQ_FILTER_ENABLED: return True
-    try:
-        t = ex.fetch_ticker(symbol)
-        # ccxt vereinheitlicht: 'quoteVolume' *kann* vorhanden sein
-        qv = t.get("quoteVolume") or (t.get("info", {}).get("quoteVolume") if isinstance(t.get("info"), dict) else None)
-        if qv is None:  # wenn Exchange es nicht liefert: nicht blockieren
-            return True
-        return float(qv) >= LIQ_MIN_QUOTE_USDT
-    except Exception:
-        return True  # lieber nicht blockieren als false negative
-
 # ====== Trigger (M15) ======
 def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
     df = df.copy()
@@ -152,23 +127,11 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
     df["volma"]  = vol_sma(df.volume, 20)
     df["sma30"]  = sma(df.close, 30)
 
-    c, v, ma30, vma = df.close, df.volume, df.sma30, df.volma
+    c, v = df.close, df.volume
+    vol_ok = v.iloc[-1] > (VOL_SPIKE_FACTOR * df.volma.iloc[-1])
 
-    # --- Volumenprüfung mit Delay (Break-Candle: −2) ---
-    vol_idx = -2 if VOLUME_CONFIRM_DELAY >= 1 and len(v) >= 2 else -1
-    vol_ok = v.iloc[vol_idx] > (VOL_SPIKE_FACTOR * vma.iloc[vol_idx])
-
-    # --- Strenger Break: Kreuz auf Candle −2, Bestätigung Candle −1 ---
-    if REQUIRE_STRICT_MA30_CLOSE and len(c) >= 3:
-        bull_break = (c.iloc[-3] <= ma30.iloc[-3]) and (c.iloc[-2] >  ma30.iloc[-2])
-        bear_break = (c.iloc[-3] >= ma30.iloc[-3]) and (c.iloc[-2] <  ma30.iloc[-2])
-        bull_conf  = (c.iloc[-1] >  ma30.iloc[-1])
-        bear_conf  = (c.iloc[-1] <  ma30.iloc[-1])
-        bull30 = bull_break and bull_conf and vol_ok
-        bear30 = bear_break and bear_conf and vol_ok
-    else:
-        bull30 = (c.iloc[-2] < ma30.iloc[-2]) and (c.iloc[-1] > ma30.iloc[-1]) and vol_ok
-        bear30 = (c.iloc[-2] > ma30.iloc[-2]) and (c.iloc[-1] < ma30.iloc[-1]) and vol_ok
+    bull30 = (c.iloc[-2] < df.sma30.iloc[-2]) and (c.iloc[-1] > df.sma30.iloc[-1]) and vol_ok
+    bear30 = (c.iloc[-2] > df.sma30.iloc[-2]) and (c.iloc[-1] < df.sma30.iloc[-1]) and vol_ok
 
     return {
         "bull30": bool(bull30),
@@ -215,6 +178,7 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
     if hi_i == lo_i:
         return (False, (0.0, 0.0))
     if hi_i > lo_i:
+        # Up-Impuls
         fib50  = lo_v + 0.5   * (hi_v - lo_v)
         fib618 = lo_v + 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib50, fib618])
@@ -222,28 +186,13 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         ok = (direction == "LONG") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
     else:
+        # Down-Impuls
         fib50  = hi_v - 0.5   * (hi_v - lo_v)
         fib618 = hi_v - 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib618, fib50])
         zmin *= (1 - FIB_TOL_PCT); zmax *= (1 + FIB_TOL_PCT)
         ok = (direction == "SHORT") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
-
-# ===== Zusatz: Volumen-Bestätigung beim Fib-Retest (nur auf Retest-TF, z. B. 5m) =====
-def fib_retest_with_vol(df5m: pd.DataFrame, direction: str, base_ok: bool) -> Tuple[bool, Optional[float], Optional[float]]:
-    """
-    Ergänzt den Fib-Retest um Volumen-Bestätigung:
-    Nur gültig, wenn letzte Candle-Volume > 90%-Quantil der letzten ~60 Bars.
-    Rückgabe: (ok, vol_last, vol_q90)
-    """
-    if not base_ok:
-        return False, None, None
-    try:
-        vol_last = float(df5m["volume"].iloc[-1])
-        vol_q90  = float(df5m["volume"].rolling(60, min_periods=10).quantile(0.90).iloc[-1])
-        return (vol_last > vol_q90), vol_last, vol_q90
-    except Exception:
-        return base_ok, None, None
 
 # ====== S/R Levels (1h) ======
 def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
@@ -286,6 +235,12 @@ def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: s
 
 # ---------- NUR 1 TP zurückgeben ----------
 def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,bool]:
+    """
+    Liefert nur noch EIN TP:
+      • S/R: erweitertes Ziel (früher TP2 via TP2_FACTOR)
+      • ATR-Fallback: früherer TP3 (TP3_ATR)
+    Rückgabe: (entry, sl, tp, used_sr)
+    """
     res_lvls, sup_lvls = find_pivots_levels(df_sr)
 
     # S/R bevorzugt
@@ -293,13 +248,13 @@ def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFram
         tp1_sr = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
         sl_sr  = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
         if tp1_sr is not None and sl_sr is not None and tp1_sr > entry and sl_sr < entry:
-            tp_ext = round(entry + (tp1_sr - entry) * TP2_FACTOR, 6)
+            tp_ext = round(entry + (tp1_sr - entry) * TP2_FACTOR, 6)  # früherer TP2
             return entry, round(sl_sr,6), tp_ext, True
     else:
         tp1_sr = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
         sl_sr  = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
         if tp1_sr is not None and sl_sr is not None and tp1_sr < entry and sl_sr > entry:
-            tp_ext = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)
+            tp_ext = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)  # früherer TP2
             return entry, round(sl_sr,6), tp_ext, True
 
     # ATR Fallback → nimm früheren TP3
@@ -316,10 +271,8 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
     ok, warn = [], []
 
     atr_pct = (trig15["atr"] / max(trig15["price"], 1e-9)) * 100.0
-    if atr_pct < MIN_ATR_PCT:
-        return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
-    if atr_pct > MAX_ATR_PCT:
-        return (False, ok, [f"ATR>{MAX_ATR_PCT}% ({atr_pct:.2f}%)"])  # 🚫 zu heiß
+    if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
+    else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
     # M15: 30MA Breakout mit Volumen (Pflicht)
     if direction == "LONG":
@@ -331,10 +284,10 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
 
     # EMA200 Richtung (M15)
     ema200_ok = trig15["ema200_up"] if direction=="LONG" else trig15["ema200_dn"]
-    if ema200_ok: ok.append("M15 EMA200 ok")
+    if ema200_ok: ok.append("EMA200 ok")
     else:         return (False, ok, ["EMA200 gegen Setup"])
 
-    # Volumen Pflicht (M15 Break)
+    # Volumen Pflicht
     if trig15["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA20")
     else:                return (False, ok, [f"kein Vol-Spike (≥{VOL_SPIKE_FACTOR:.2f}× Pflicht)"])
 
@@ -363,7 +316,10 @@ def need_throttle(key: str, now: float, cool_s: int = COOLDOWN_S) -> bool:
 # ---------- Minimalistisches Signal ----------
 async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp: float,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
+    # Richtung & Icon
     arrow = "🟢 LONG" if direction.upper() == "LONG" else "🔴 SHORT"
+
+    # Kompakter, stylischer Signaltext
     text = (
         f"🛡 *Scanner Signal* — {symbol}\n"
         f"➡️ {arrow}\n"
@@ -372,6 +328,7 @@ async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp: 
         f"🛡 SL: `{sl}`\n"
         f"📈 Wahrscheinlichkeit: *{prob}%*"
     )
+
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
 async def send_mode_banner():
@@ -379,7 +336,7 @@ async def send_mode_banner():
         "🛡 *Scanner gestartet – MODUS: M15 30MA Breakout (mit Volumen) + Fib-Retest (0.5–0.618) + S/R (1h)*\n"
         f"• Scan-Intervall: {SCAN_INTERVAL_S//60} Minuten\n"
         f"• Fib-Confirm-TF: {FIB_CONFIRM_TF} (Close={'Yes' if FIB_REQUIRE_CANDLE_CLOSE else 'Live'})\n"
-        f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20, ATR% {MIN_ATR_PCT:.2f}%–{MAX_ATR_PCT:.2f}%\n"
+        f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20, ATR% ≥ {MIN_ATR_PCT:.2f}%\n"
         "• Ziel: Einziger TP (S/R: erweitertes Ziel; ATR: früherer TP3)"
         + (f"\n• CoinGlass Heatmap 12h (optional): Richtung muss matchen" if COINGLASS_API_KEY else "")
     )
@@ -389,34 +346,15 @@ async def send_mode_banner():
 async def scan_once():
     global last_scan_report
     now = asyncio.get_event_loop().time()
-    ts = datetime.now(timezone.utc)
-    round_ts = ts.isoformat()
+    round_ts = datetime.now(timezone.utc).isoformat()
     last_scan_report = {"ts": round_ts, "symbols": {}}
-
-    # Zeitfilter (UTC)
-    if TIME_FILTER_ENABLED and ts.hour not in ALLOWED_UTC_HOURS:
-        last_scan_report["note"] = f"Time filter active — hour {ts.hour:02d} UTC not allowed"
-        return
 
     for sym in SYMBOLS:
         try:
-            # Liquidität vorab prüfen
-            if not pass_liquidity(sym):
-                last_scan_report["symbols"][sym] = {"skip": f"Liquidity < {LIQ_MIN_QUOTE_USDT:,.0f} USDT (24h)"}
-                continue
-
             # M15 Trigger (Entry)
             df15   = fetch_df(sym, "15m")
             trig15 = analyze_trigger_m15(df15)
             price  = trig15["price"]
-
-            # Früher Abbruch ohne M15-Break (spart Arbeit)
-            if not (trig15["bull30"] or trig15["bear30"]):
-                last_scan_report["symbols"][sym] = {"skip": "Kein M15 30MA Break (Pflicht)"}
-                continue
-
-            # HTF-Bias (4h EMA200)
-            bias = get_htf_bias(sym) if REQUIRE_HTF_EMA200 else None
 
             # CoinGlass 12h Heatmap (optional)
             cg_dir = None
@@ -457,35 +395,14 @@ async def scan_once():
                 price_fib = float(df_fib["close"].iloc[-1])
 
             fib_ok_L = fib_ok_S = False
-            fib_vol_dbg = {"vol_last": None, "vol_q90": None}
             if impulse is not None:
                 okL, _ = fib_zone_ok(price_fib, impulse, "LONG")
                 okS, _ = fib_zone_ok(price_fib, impulse, "SHORT")
                 fib_ok_L, fib_ok_S = bool(okL), bool(okS)
 
-            # ✅ Volumen-Bestätigung beim Fib-Retest (auf Retest-TF)
-            if fib_ok_L:
-                ok, vlast, vq90 = fib_retest_with_vol(df_fib, "LONG", fib_ok_L)
-                fib_ok_L = ok
-                fib_vol_dbg["vol_last"], fib_vol_dbg["vol_q90"] = vlast, vq90
-            if fib_ok_S:
-                ok, vlast, vq90 = fib_retest_with_vol(df_fib, "SHORT", fib_ok_S)
-                fib_ok_S = ok
-                fib_vol_dbg["vol_last"], fib_vol_dbg["vol_q90"] = vlast, vq90
-
-            # Erlaubte Richtungen abhängig vom M15-Break (und optional 4h-Bias)
-            directions: List[str] = []
-            if trig15["bull30"]: directions.append("LONG")
-            if trig15["bear30"]: directions.append("SHORT")
-            if REQUIRE_HTF_EMA200 and bias in ("LONG","SHORT"):
-                directions = [d for d in directions if d == bias]
-                if not directions:
-                    last_scan_report["symbols"][sym] = {"skip": f"HTF bias {bias} blockt Gegenrichtung"}
-                    continue
-
             # Kandidaten sammeln
             candidates = []
-            for direction in directions:
+            for direction in ("LONG", "SHORT"):
                 fib_ok = fib_ok_L if direction=="LONG" else fib_ok_S
                 passed, ok_tags, warn_tags = build_checklist(direction, trig15, fib_ok)
                 if not passed:
@@ -509,16 +426,14 @@ async def scan_once():
                         "ok": ok_tags, "warn": warn_tags,
                         "price": price, "atr": trig15["atr"],
                         "sr_used": used_sr, "heatmap_dir": cg_dir,
-                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE,
-                        "fib_vol_last": fib_vol_dbg["vol_last"], "fib_vol_q90": fib_vol_dbg["vol_q90"],
-                        "htf_bias_4h": bias,
+                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE
                     }
                     if not throttled:
                         await send_signal(sym, direction, entry, sl, tp, prob, ok_tags, warn_tags, used_sr)
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"Prob. {prob}% < {PROB_MIN}%"}
             else:
-                last_scan_report["symbols"][sym] = {"skip": "Pflichten nicht erfüllt / gefiltert"}
+                last_scan_report["symbols"][sym] = {"skip": "Kein Setup (Pflichten nicht erfüllt)"}
 
         except Exception as e:
             last_scan_report["symbols"][sym] = {"error": str(e)}
