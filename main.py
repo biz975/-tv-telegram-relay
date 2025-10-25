@@ -77,14 +77,14 @@ TP2_FACTOR = 1.20  # für erweitertes S/R-Ziel (ehem. TP2)
 ATR_SL   = 1.5
 TP3_ATR  = 2.6
 MIN_ATR_PCT = 0.20
-MAX_ATR_PCT = 3.00   # 🚫 zu hohe Vola (z. B. News) vermeiden
+MAX_ATR_PCT = 5.00   # 🚫 zu hohe Vola (z. B. News) vermeiden
 
 # ====== Weitere Filter ======
 VOL_SPIKE_FACTOR      = 1.10            # für M15-Break
 REQUIRE_HTF_EMA200    = True            # 4h-Bias muss matchen
 LIQ_FILTER_ENABLED    = True
-LIQ_MIN_QUOTE_USDT    = 3_000_000      # min. 24h QuoteVol
-TIME_FILTER_ENABLED   = True
+LIQ_MIN_QUOTE_USDT    = 2_000_000      # min. 24h QuoteVol
+TIME_FILTER_ENABLED   = False
 # erlaube nur diese UTC-Stunden (z. B. 01–23 = erste Stunde auslassen)
 ALLOWED_UTC_HOURS     = set(range(1,24))
 
