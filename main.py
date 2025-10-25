@@ -81,7 +81,7 @@ TP3_ATR = 2.6
 
 # ====== Checklist Settings ======
 MIN_ATR_PCT      = 0.20
-VOL_SPIKE_FACTOR = 1.30
+VOL_SPIKE_FACTOR = 1.15
 PROB_MIN         = 60
 COOLDOWN_S       = 300
 
