@@ -77,9 +77,13 @@ TP3_ATR = 2.6     # wird jetzt als einziger ATR-TP benutzt
 
 # ====== Checklist Settings ======
 MIN_ATR_PCT      = 0.20
-VOL_SPIKE_FACTOR = 1.05
+VOL_SPIKE_FACTOR = 1.15
 PROB_MIN         = 60
 COOLDOWN_S       = 5000
+
+# ====== Fib-Recent Settings (Option C) ======
+FIB_RECENT_BARS = 6              # akzeptiere Retest bis zu 6×5m Kerzen zurück (~30min)
+MAX_DIST_FROM_ZONE_ATR = 1.0     # max. Distanz zum Zonenrand in ATR(15m), sonst "zu spät"
 
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Fib-Retest + S/R)")
@@ -236,6 +240,55 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         zmin *= (1 - FIB_TOL_PCT); zmax *= (1 + FIB_TOL_PCT)
         ok = (direction == "SHORT") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
+
+# ====== Option C: Fib "jetzt oder kürzlich" ======
+def fib_zone_for_direction(df_fib: pd.DataFrame, direction: str) -> Optional[Tuple[float, float]]:
+    imp = directional_impulse(df_fib, direction)
+    if imp is None:
+        return None
+    ok, zone = fib_zone_ok(price=0.0, impulse=imp, direction=direction)  # ok hier egal
+    return zone
+
+def fib_ok_now_or_recent(df_fib: pd.DataFrame, direction: str, price_now: float, atr15: float) -> bool:
+    """
+    Gültig wenn:
+      a) aktueller (bzw. letzter geschlossener) Preis in der 0.5–0.618-Zone liegt, ODER
+      b) eine der letzten FIB_RECENT_BARS 5m-Candles in der Zone geschlossen hat
+         UND der aktuelle Preis bereits in Richtungs-Seite weggebrochen ist,
+         aber nicht weiter als MAX_DIST_FROM_ZONE_ATR × ATR(15m) vom Zonenrand entfernt.
+    """
+    zone = fib_zone_for_direction(df_fib, direction)
+    if not zone:
+        return False
+    zmin, zmax = zone
+
+    # a) aktueller/letzter Close in Zone?
+    if FIB_REQUIRE_CANDLE_CLOSE:
+        price_chk = float(df_fib["close"].iloc[-2]) if len(df_fib) >= 2 else float(df_fib["close"].iloc[-1])
+    else:
+        price_chk = float(df_fib["close"].iloc[-1])
+    if zmin <= price_chk <= zmax:
+        return True
+
+    # b) letzte X 5m-Closes in Zone?
+    closes = df_fib["close"].iloc[-(FIB_RECENT_BARS+1):-1] if len(df_fib) > 1 else pd.Series([], dtype=float)
+    if len(closes) == 0:
+        return False
+    touched = any((zmin <= c <= zmax) for c in closes)
+    if not touched:
+        return False
+
+    # nicht zu weit gelaufen
+    if direction.upper() == "SHORT":
+        if price_now >= zmin:
+            return False
+        dist = zmin - price_now  # Abstand zum unteren Zonenrand
+    else:
+        if price_now <= zmax:
+            return False
+        dist = price_now - zmax  # Abstand zum oberen Zonenrand
+
+    return dist <= (MAX_DIST_FROM_ZONE_ATR * atr15)
 
 # ====== S/R Levels (1h) ======
 def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[Tuple[float,int]]]:
@@ -450,26 +503,11 @@ async def scan_once():
                 except Exception:
                     cg_dir = None
 
-            # Safe-Entry via Fib-Retest auf FIB_CONFIRM_TF
-            df_fib  = fetch_df(sym, FIB_CONFIRM_TF)
+            # ===== Fib-Check: jetzt ODER kürzlich (Option C) =====
+            df_fib = fetch_df(sym, FIB_CONFIRM_TF)
 
-            # Preisbasis für Fib je nach Close-Policy
-            if FIB_REQUIRE_CANDLE_CLOSE:
-                price_fib = float(df_fib["close"].iloc[-2]) if len(df_fib) >= 2 else float(df_fib["close"].iloc[-1])
-            else:
-                price_fib = float(df_fib["close"].iloc[-1])
-
-            # Punkt 3: richtungs-sensitiver Impuls
-            impulse_L = directional_impulse(df_fib, "LONG")
-            impulse_S = directional_impulse(df_fib, "SHORT")
-
-            fib_ok_L = fib_ok_S = False
-            if impulse_L is not None:
-                okL, _ = fib_zone_ok(price_fib, impulse_L, "LONG")
-                fib_ok_L = bool(okL)
-            if impulse_S is not None:
-                okS, _ = fib_zone_ok(price_fib, impulse_S, "SHORT")
-                fib_ok_S = bool(okS)
+            fib_ok_L = fib_ok_now_or_recent(df_fib, "LONG",  price, trig15["atr"])
+            fib_ok_S = fib_ok_now_or_recent(df_fib, "SHORT", price, trig15["atr"])
 
             # Kandidaten sammeln
             candidates = []
@@ -497,7 +535,8 @@ async def scan_once():
                         "ok": ok_tags, "warn": warn_tags,
                         "price": price, "atr": trig15["atr"],
                         "sr_used": used_sr, "heatmap_dir": cg_dir,
-                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE
+                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE,
+                        "fib_recent_bars": FIB_RECENT_BARS
                     }
                     if not throttled:
                         await send_signal(sym, direction, entry, sl, tp, prob, ok_tags, warn_tags, used_sr)
