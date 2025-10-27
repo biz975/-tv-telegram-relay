@@ -81,7 +81,11 @@ VOL_SPIKE_FACTOR = 1.15
 PROB_MIN         = 60
 COOLDOWN_S       = 5000
 
-# ====== Fib-Recent Settings (Option C) ======
+# ====== Trendfilter (EMA200) – Option 1 (Pflicht mit Toleranz) ======
+EMA200_STRICT  = True       # Pflichtfilter bleibt aktiv
+EMA200_TOL_PCT = 0.20       # bis zu 0.20% unter/über EMA200 zulassen
+
+# ====== Fib-Recent Settings (dein Option-C-Block bleibt) ======
 FIB_RECENT_BARS = 6              # akzeptiere Retest bis zu 6×5m Kerzen zurück (~30min)
 MAX_DIST_FROM_ZONE_ATR = 1.0     # max. Distanz zum Zonenrand in ATR(15m), sonst "zu spät"
 
@@ -129,18 +133,14 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
     df["volma"]  = vol_sma(df.volume, 20)
     df["sma30"]  = sma(df.close, 30)
 
-    # MA30-Slope über die letzten 3 Kerzen
     slope = df.sma30.diff()
     slope_ok_up   = slope.iloc[-1] > 0 and slope.iloc[-2] > 0 and slope.iloc[-3] > 0
     slope_ok_down = slope.iloc[-1] < 0 and slope.iloc[-2] < 0 and slope.iloc[-3] < 0
 
     c, v = df.close, df.volume
     vol_ok = v.iloc[-1] > (VOL_SPIKE_FACTOR * df.volma.iloc[-1])
-
-    # RSI-Basiswert
     r = float(df.rsi.iloc[-1])
 
-    # Break + Vol + Slope + RSI-Richtung
     bull30 = (c.iloc[-2] <= df.sma30.iloc[-2]) and (c.iloc[-1] > df.sma30.iloc[-1]) and vol_ok and slope_ok_up and (r >= 50.0)
     bear30 = (c.iloc[-2] >= df.sma30.iloc[-2]) and (c.iloc[-1] < df.sma30.iloc[-1]) and vol_ok and slope_ok_down and (r <= 50.0)
 
@@ -150,6 +150,7 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
         "vol_ok": bool(vol_ok),
         "atr": float(df.atr.iloc[-1]),
         "price": float(c.iloc[-1]),
+        "ema200_val": float(df.ema200.iloc[-1]),  # << nötig für Toleranz
         "ema200_up": (c.iloc[-1] > df.ema200.iloc[-1]),
         "ema200_dn": (c.iloc[-1] < df.ema200.iloc[-1]),
         "rsi": r,
@@ -171,7 +172,6 @@ def _find_pivots(values: List[float], left: int, right: int, is_high: bool) -> L
                 idxs.append(i)
     return idxs
 
-# (beibehalten; wird nicht mehr direkt genutzt)
 def last_impulse(df: pd.DataFrame) -> Optional[Tuple[Tuple[int,float], Tuple[int,float]]]:
     highs = df["high"].values
     lows  = df["low"].values
@@ -187,7 +187,7 @@ def last_impulse(df: pd.DataFrame) -> Optional[Tuple[Tuple[int,float], Tuple[int
         return ((last_lo_i, lows[last_lo_i]), (last_hi_i, highs[last_hi_i]))
     return None
 
-# Punkt 3: richtungs-sensitiver Impuls (LONG = lo→hi, SHORT = hi→lo)
+# Richtungs-sensitiver Impuls
 def directional_impulse(df: pd.DataFrame, want: str) -> Optional[Tuple[Tuple[int,float], Tuple[int,float]]]:
     highs = df["high"].values
     lows  = df["low"].values
@@ -195,28 +195,20 @@ def directional_impulse(df: pd.DataFrame, want: str) -> Optional[Tuple[Tuple[int
     lo_idx = _find_pivots(list(lows ), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, False)
     if not hi_idx or not lo_idx:
         return None
-
     if want.upper() == "LONG":
-        # finde letztes Paar mit lo < hi
         pairs = [(lo, hi) for lo in lo_idx for hi in hi_idx if lo < hi]
-        if not pairs:
-            return None
-        # nimm das Paar, dessen hi am jüngsten ist
+        if not pairs: return None
         hi_i = max([p[1] for p in pairs])
         lo_candidates = [lo for (lo, hi_) in pairs if hi_ == hi_i and lo < hi_i]
-        if not lo_candidates:
-            return None
+        if not lo_candidates: return None
         lo_i = max(lo_candidates)
         return ((lo_i, lows[lo_i]), (hi_i, highs[hi_i]))
     else:
-        # SHORT: hi < lo
         pairs = [(hi, lo) for hi in hi_idx for lo in lo_idx if hi < lo]
-        if not pairs:
-            return None
+        if not pairs: return None
         lo_i = max([p[1] for p in pairs])
         hi_candidates = [hi for (hi, lo_) in pairs if lo_ == lo_i and hi < lo_i]
-        if not hi_candidates:
-            return None
+        if not hi_candidates: return None
         hi_i = max(hi_candidates)
         return ((lo_i, lows[lo_i]), (hi_i, highs[hi_i]))
 
@@ -225,7 +217,6 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
     if hi_i == lo_i:
         return (False, (0.0, 0.0))
     if hi_i > lo_i:
-        # Up-Impuls
         fib50  = lo_v + 0.5   * (hi_v - lo_v)
         fib618 = lo_v + 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib50, fib618])
@@ -233,7 +224,6 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         ok = (direction == "LONG") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
     else:
-        # Down-Impuls
         fib50  = hi_v - 0.5   * (hi_v - lo_v)
         fib618 = hi_v - 0.618 * (hi_v - lo_v)
         zmin, zmax = sorted([fib618, fib50])
@@ -241,28 +231,20 @@ def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]]
         ok = (direction == "SHORT") and (zmin <= price <= zmax)
         return (ok, (zmin, zmax))
 
-# ====== Option C: Fib "jetzt oder kürzlich" ======
+# ====== Fib "jetzt oder kürzlich" (deine Option C) ======
 def fib_zone_for_direction(df_fib: pd.DataFrame, direction: str) -> Optional[Tuple[float, float]]:
     imp = directional_impulse(df_fib, direction)
     if imp is None:
         return None
-    ok, zone = fib_zone_ok(price=0.0, impulse=imp, direction=direction)  # ok hier egal
+    _, zone = fib_zone_ok(price=0.0, impulse=imp, direction=direction)
     return zone
 
 def fib_ok_now_or_recent(df_fib: pd.DataFrame, direction: str, price_now: float, atr15: float) -> bool:
-    """
-    Gültig wenn:
-      a) aktueller (bzw. letzter geschlossener) Preis in der 0.5–0.618-Zone liegt, ODER
-      b) eine der letzten FIB_RECENT_BARS 5m-Candles in der Zone geschlossen hat
-         UND der aktuelle Preis bereits in Richtungs-Seite weggebrochen ist,
-         aber nicht weiter als MAX_DIST_FROM_ZONE_ATR × ATR(15m) vom Zonenrand entfernt.
-    """
     zone = fib_zone_for_direction(df_fib, direction)
     if not zone:
         return False
     zmin, zmax = zone
 
-    # a) aktueller/letzter Close in Zone?
     if FIB_REQUIRE_CANDLE_CLOSE:
         price_chk = float(df_fib["close"].iloc[-2]) if len(df_fib) >= 2 else float(df_fib["close"].iloc[-1])
     else:
@@ -270,7 +252,6 @@ def fib_ok_now_or_recent(df_fib: pd.DataFrame, direction: str, price_now: float,
     if zmin <= price_chk <= zmax:
         return True
 
-    # b) letzte X 5m-Closes in Zone?
     closes = df_fib["close"].iloc[-(FIB_RECENT_BARS+1):-1] if len(df_fib) > 1 else pd.Series([], dtype=float)
     if len(closes) == 0:
         return False
@@ -278,15 +259,12 @@ def fib_ok_now_or_recent(df_fib: pd.DataFrame, direction: str, price_now: float,
     if not touched:
         return False
 
-    # nicht zu weit gelaufen
     if direction.upper() == "SHORT":
-        if price_now >= zmin:
-            return False
-        dist = zmin - price_now  # Abstand zum unteren Zonenrand
+        if price_now >= zmin: return False
+        dist = zmin - price_now
     else:
-        if price_now <= zmax:
-            return False
-        dist = price_now - zmax  # Abstand zum oberen Zonenrand
+        if price_now <= zmax: return False
+        dist = price_now - zmax
 
     return dist <= (MAX_DIST_FROM_ZONE_ATR * atr15)
 
@@ -331,29 +309,20 @@ def nearest_level(levels: List[Tuple[float,int]], ref_price: float, direction: s
 
 # ---------- NUR 1 TP zurückgeben ----------
 def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFrame) -> Tuple[float,float,float,bool]:
-    """
-    Liefert nur noch EIN TP:
-      • S/R: erweitertes Ziel (früher TP2 via TP2_FACTOR)
-      • ATR-Fallback: früherer TP3 (TP3_ATR)
-    Rückgabe: (entry, sl, tp, used_sr)
-    """
     res_lvls, sup_lvls = find_pivots_levels(df_sr)
-
-    # S/R bevorzugt
     if direction == "LONG":
         tp1_sr = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
         sl_sr  = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
         if tp1_sr is not None and sl_sr is not None and tp1_sr > entry and sl_sr < entry:
-            tp_ext = round(entry + (tp1_sr - entry) * TP2_FACTOR, 6)  # früherer TP2
+            tp_ext = round(entry + (tp1_sr - entry) * TP2_FACTOR, 6)
             return entry, round(sl_sr,6), tp_ext, True
     else:
         tp1_sr = nearest_level(sup_lvls, entry, "SHORT", MIN_STRENGTH)
         sl_sr  = nearest_level(res_lvls, entry, "LONG", MIN_STRENGTH)
         if tp1_sr is not None and sl_sr is not None and tp1_sr < entry and sl_sr > entry:
-            tp_ext = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)  # früherer TP2
+            tp_ext = round(entry - (entry - tp1_sr) * TP2_FACTOR, 6)
             return entry, round(sl_sr,6), tp_ext, True
 
-    # ATR Fallback → nimm früheren TP3
     if direction == "LONG":
         sl = round(entry - ATR_SL * atrv, 6)
         tp = round(entry + TP3_ATR * atrv, 6)
@@ -362,7 +331,7 @@ def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFram
         tp = round(entry - TP3_ATR * atrv, 6)
     return entry, sl, tp, False
 
-# ====== Checkliste ======
+# ====== Checkliste (inkl. EMA200 Toleranz – Option 1) ======
 def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tuple[bool, List[str], List[str]]:
     ok, warn = [], []
 
@@ -370,18 +339,41 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
     if atr_pct >= MIN_ATR_PCT: ok.append(f"ATR≥{MIN_ATR_PCT}% ({atr_pct:.2f}%)")
     else:                      return (False, ok, [f"ATR<{MIN_ATR_PCT}% ({atr_pct:.2f}%)"])
 
-    # M15: 30MA Breakout mit Volumen (Pflicht)
     if direction == "LONG":
-        if trig15["bull30"]: ok.append("M15 30MA Break ↑ (Vol + Slope + RSI)")
+        if trig15["bull30"]: ok.append("M15 30MA Break ↑ (Vol+Slope+RSI)")
         else:                return (False, ok, ["Kein M15 30MA Break↑"])
     else:
-        if trig15["bear30"]: ok.append("M15 30MA Break ↓ (Vol + Slope + RSI)")
+        if trig15["bear30"]: ok.append("M15 30MA Break ↓ (Vol+Slope+RSI)")
         else:                return (False, ok, ["Kein M15 30MA Break↓"])
 
-    # EMA200 Richtung (M15)
-    ema200_ok = trig15["ema200_up"] if direction=="LONG" else trig15["ema200_dn"]
-    if ema200_ok: ok.append("EMA200 ok")
-    else:         return (False, ok, ["EMA200 gegen Setup"])
+    # ----- EMA200 mit Toleranz -----
+    ema200_val = trig15.get("ema200_val", None)
+    if ema200_val is None:
+        return (False, ok, ["EMA200 Daten fehlen"])
+
+    price_now = trig15["price"]
+    if direction == "LONG":
+        if trig15["ema200_up"]:
+            ok.append("EMA200 ok")
+        else:
+            dist_pct = (ema200_val - price_now) / max(ema200_val,1e-9) * 100.0  # wie viel darunter
+            if EMA200_STRICT and dist_pct <= EMA200_TOL_PCT:
+                ok.append(f"EMA200 knapp (Dip −{dist_pct:.2f}% ≤ {EMA200_TOL_PCT:.2f}%)")
+            elif EMA200_STRICT:
+                return (False, ok, [f"EMA200 gegen Setup (−{dist_pct:.2f}%)"])
+            else:
+                warn.append(f"Unter EMA200 (−{dist_pct:.2f}%)")
+    else:
+        if trig15["ema200_dn"]:
+            ok.append("EMA200 ok")
+        else:
+            dist_pct = (price_now - ema200_val) / max(ema200_val,1e-9) * 100.0  # wie viel darüber
+            if EMA200_STRICT and dist_pct <= EMA200_TOL_PCT:
+                ok.append(f"EMA200 knapp (+{dist_pct:.2f}% ≤ {EMA200_TOL_PCT:.2f}%)")
+            elif EMA200_STRICT:
+                return (False, ok, [f"EMA200 gegen Setup (+{dist_pct:.2f}%)"])
+            else:
+                warn.append(f"Ober EMA200 (+{dist_pct:.2f}%)")
 
     # Volumen Pflicht
     if trig15["vol_ok"]: ok.append(f"Vol>{VOL_SPIKE_FACTOR:.2f}×MA20")
@@ -392,7 +384,6 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
         if fib_ok: ok.append(f"Safe-Entry Fib 0.5–0.618 ({FIB_CONFIRM_TF})")
         else:      return (False, ok, [f"Kein Fib-Retest (0.5–0.618) auf {FIB_CONFIRM_TF}"])
 
-    # RSI Hinweis (informativ)
     if direction=="LONG":
         if trig15["rsi"] > 67: warn.append(f"RSI hoch ({trig15['rsi']:.1f})")
         else:                  ok.append(f"RSI ok ({trig15['rsi']:.1f})")
@@ -409,30 +400,24 @@ def need_throttle(key: str, now: float, cool_s: int = COOLDOWN_S) -> bool:
     last_signal[key] = now
     return False
 
-# ---------- Punkt 6: Break-Fail-Sperre (schneller Fakeout-Filter) ----------
+# ---------- Break-Fail-Sperre ----------
 def break_failed_recently(df15: pd.DataFrame) -> bool:
-    """Verwirft Setups, wenn nach einem frischen Break sofort ein Re-Close zurück über/unter MA30 kommt."""
     s = sma(df15.close, 30)
     c = df15.close
     if len(c) < 3:
         return False
     last3 = c.iloc[-3:]
     last3_ma = s.iloc[-3:]
-    # Up-Break gefolgt von Close < MA30
     up_break = (last3.iloc[-3] <= last3_ma.iloc[-3]) and (last3.iloc[-2] > last3_ma.iloc[-2])
     fail_up  = up_break and (last3.iloc[-1] < last3_ma.iloc[-1])
-    # Down-Break gefolgt von Close > MA30
     dn_break = (last3.iloc[-3] >= last3_ma.iloc[-3]) and (last3.iloc[-2] < last3_ma.iloc[-2])
     fail_dn  = dn_break and (last3.iloc[-1] > last3_ma.iloc[-1])
     return bool(fail_up or fail_dn)
 
-# ---------- Minimalistisches Signal ----------
+# ---------- Telegram Signal ----------
 async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp: float,
                       prob: int, checklist_ok: List[str], checklist_warn: List[str], used_sr: bool):
-    # Richtung & Icon
     arrow = "🟢 LONG" if direction.upper() == "LONG" else "🔴 SHORT"
-
-    # Kompakter, stylischer Signaltext
     text = (
         f"🛡 *Scanner Signal* — {symbol}\n"
         f"➡️ {arrow}\n"
@@ -441,7 +426,6 @@ async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp: 
         f"🛡 SL: `{sl}`\n"
         f"📈 Wahrscheinlichkeit: *{prob}%*"
     )
-
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
 async def send_mode_banner():
@@ -450,6 +434,7 @@ async def send_mode_banner():
         f"• Scan-Intervall: {SCAN_INTERVAL_S//60} Minuten\n"
         f"• Fib-Confirm-TF: {FIB_CONFIRM_TF} (Close={'Yes' if FIB_REQUIRE_CANDLE_CLOSE else 'Live'})\n"
         f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20, ATR% ≥ {MIN_ATR_PCT:.2f}%\n"
+        f"• EMA200-Filter: Pflicht mit Toleranz ≤ {EMA200_TOL_PCT:.2f}%\n"
         "• Ziel: Einziger TP (S/R: erweitertes Ziel; ATR: früherer TP3)"
         + (f"\n• CoinGlass Heatmap 12h (optional): Richtung muss matchen" if COINGLASS_API_KEY else "")
     )
@@ -469,7 +454,7 @@ async def scan_once():
             trig15 = analyze_trigger_m15(df15)
             price  = trig15["price"]
 
-            # Punkt 6: Break-Fail-Check
+            # Break-Fail-Check
             if break_failed_recently(df15):
                 last_scan_report["symbols"][sym] = {"skip": "Break-Fail (MA30 Re-Close)"}
                 await asyncio.sleep(getattr(ex, "rateLimit", 200) / 1000)
@@ -503,11 +488,11 @@ async def scan_once():
                 except Exception:
                     cg_dir = None
 
-            # ===== Fib-Check: jetzt ODER kürzlich (Option C) =====
+            # Fib-Check (now or recent)
             df_fib = fetch_df(sym, FIB_CONFIRM_TF)
-
-            fib_ok_L = fib_ok_now_or_recent(df_fib, "LONG",  price, trig15["atr"])
-            fib_ok_S = fib_ok_now_or_recent(df_fib, "SHORT", price, trig15["atr"])
+            price_fib_now = float(df_fib["close"].iloc[-1])
+            fib_ok_L = fib_ok_now_or_recent(df_fib, "LONG", price_fib_now, trig15["atr"])
+            fib_ok_S = fib_ok_now_or_recent(df_fib, "SHORT", price_fib_now, trig15["atr"])
 
             # Kandidaten sammeln
             candidates = []
@@ -518,7 +503,8 @@ async def scan_once():
                     continue
                 if cg_dir and cg_dir != direction:
                     continue
-                prob = prob_score(trig15["vol_ok"], trig15["ema200_up"] if direction=="LONG" else trig15["ema200_dn"], fib_ok)
+                ema_align = trig15["ema200_up"] if direction=="LONG" else trig15["ema200_dn"]
+                prob = prob_score(trig15["vol_ok"], ema_align, fib_ok)
                 candidates.append((direction, prob, ok_tags, warn_tags))
 
             if candidates:
@@ -535,8 +521,7 @@ async def scan_once():
                         "ok": ok_tags, "warn": warn_tags,
                         "price": price, "atr": trig15["atr"],
                         "sr_used": used_sr, "heatmap_dir": cg_dir,
-                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE,
-                        "fib_recent_bars": FIB_RECENT_BARS
+                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE
                     }
                     if not throttled:
                         await send_signal(sym, direction, entry, sl, tp, prob, ok_tags, warn_tags, used_sr)
@@ -564,10 +549,9 @@ async def _startup():
     asyncio.create_task(runner())
 
 # ====== TEST & RELAY ENDPOINTS ======
-
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Fib-Retest + S/R (1 TP)"
+    text = "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Fib-Retest + S/R (1 TP) + EMA200 Toleranz"
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True}
 
@@ -613,7 +597,7 @@ async def tv_telegram_relay(req: Request):
 
     return {"ok": True, "forwarded": True}
 
-# Auto-Link-Seite (klickbare, korrekte Links zu deiner Domain)
+# Auto-Link-Seite
 @app.get("/links")
 async def links(request: Request):
     base = str(request.base_url).rstrip("/")
