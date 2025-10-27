@@ -51,8 +51,8 @@ LOOKBACK        = 300
 SCAN_INTERVAL_S = 5 * 60   # Intervall (min)
 
 # ====== Entry-Logik ======
-# Pflicht 1: M15 30MA-Break + Volumen
-# Pflicht 2: Safe-Entry per Fib-Retest (0.5–0.618) auf FIB_CONFIRM_TF
+# Pflicht 1: M15 30MA-Break + Volumen (mit Slope + RSI, siehe analyze_trigger_m15)
+# Pflicht 2: Safe-Entry per Fib-Retest (0.5–0.618) auf FIB_CONFIRM_TF (mit richtungs-sensitivem Impuls)
 FIB_CONFIRM_TF            = "5m"          # "5m" oder "15m"
 SAFE_ENTRY_REQUIRED       = True          # Fib-Retest Pflicht (False = nur optional)
 FIB_TOL_PCT               = 0.10 / 100.0  # ±0.10 % Toleranz
@@ -116,7 +116,7 @@ def fetch_df(symbol: str, timeframe: str, limit: int = LOOKBACK) -> pd.DataFrame
     df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
     return df
 
-# ====== Trigger (M15) ======
+# ====== Trigger (M15) — Punkt 1: Slope + RSI in den Break integrieren ======
 def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
     df = df.copy()
     df["ema200"] = ema(df.close, 200)
@@ -125,11 +125,20 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
     df["volma"]  = vol_sma(df.volume, 20)
     df["sma30"]  = sma(df.close, 30)
 
+    # MA30-Slope über die letzten 3 Kerzen
+    slope = df.sma30.diff()
+    slope_ok_up   = slope.iloc[-1] > 0 and slope.iloc[-2] > 0 and slope.iloc[-3] > 0
+    slope_ok_down = slope.iloc[-1] < 0 and slope.iloc[-2] < 0 and slope.iloc[-3] < 0
+
     c, v = df.close, df.volume
     vol_ok = v.iloc[-1] > (VOL_SPIKE_FACTOR * df.volma.iloc[-1])
 
-    bull30 = (c.iloc[-2] < df.sma30.iloc[-2]) and (c.iloc[-1] > df.sma30.iloc[-1]) and vol_ok
-    bear30 = (c.iloc[-2] > df.sma30.iloc[-2]) and (c.iloc[-1] < df.sma30.iloc[-1]) and vol_ok
+    # RSI-Basiswert
+    r = float(df.rsi.iloc[-1])
+
+    # Break + Vol + Slope + RSI-Richtung
+    bull30 = (c.iloc[-2] <= df.sma30.iloc[-2]) and (c.iloc[-1] > df.sma30.iloc[-1]) and vol_ok and slope_ok_up and (r >= 50.0)
+    bear30 = (c.iloc[-2] >= df.sma30.iloc[-2]) and (c.iloc[-1] < df.sma30.iloc[-1]) and vol_ok and slope_ok_down and (r <= 50.0)
 
     return {
         "bull30": bool(bull30),
@@ -139,7 +148,9 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
         "price": float(c.iloc[-1]),
         "ema200_up": (c.iloc[-1] > df.ema200.iloc[-1]),
         "ema200_dn": (c.iloc[-1] < df.ema200.iloc[-1]),
-        "rsi": float(df.rsi.iloc[-1]),
+        "rsi": r,
+        "ma30_slope_up": bool(slope_ok_up),
+        "ma30_slope_dn": bool(slope_ok_down),
     }
 
 # ====== Fib-Retest auf FIB_CONFIRM_TF ======
@@ -156,6 +167,7 @@ def _find_pivots(values: List[float], left: int, right: int, is_high: bool) -> L
                 idxs.append(i)
     return idxs
 
+# (beibehalten; wird nicht mehr direkt genutzt)
 def last_impulse(df: pd.DataFrame) -> Optional[Tuple[Tuple[int,float], Tuple[int,float]]]:
     highs = df["high"].values
     lows  = df["low"].values
@@ -170,6 +182,39 @@ def last_impulse(df: pd.DataFrame) -> Optional[Tuple[Tuple[int,float], Tuple[int
     elif last_hi_i < last_lo_i:
         return ((last_lo_i, lows[last_lo_i]), (last_hi_i, highs[last_hi_i]))
     return None
+
+# Punkt 3: richtungs-sensitiver Impuls (LONG = lo→hi, SHORT = hi→lo)
+def directional_impulse(df: pd.DataFrame, want: str) -> Optional[Tuple[Tuple[int,float], Tuple[int,float]]]:
+    highs = df["high"].values
+    lows  = df["low"].values
+    hi_idx = _find_pivots(list(highs), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, True)
+    lo_idx = _find_pivots(list(lows ), PIVOT_LEFT_TRIG, PIVOT_RIGHT_TRIG, False)
+    if not hi_idx or not lo_idx:
+        return None
+
+    if want.upper() == "LONG":
+        # finde letztes Paar mit lo < hi
+        pairs = [(lo, hi) for lo in lo_idx for hi in hi_idx if lo < hi]
+        if not pairs:
+            return None
+        # nimm das Paar, dessen hi am jüngsten ist
+        hi_i = max([p[1] for p in pairs])
+        lo_candidates = [lo for (lo, hi_) in pairs if hi_ == hi_i and lo < hi_i]
+        if not lo_candidates:
+            return None
+        lo_i = max(lo_candidates)
+        return ((lo_i, lows[lo_i]), (hi_i, highs[hi_i]))
+    else:
+        # SHORT: hi < lo
+        pairs = [(hi, lo) for hi in hi_idx for lo in lo_idx if hi < lo]
+        if not pairs:
+            return None
+        lo_i = max([p[1] for p in pairs])
+        hi_candidates = [hi for (hi, lo_) in pairs if lo_ == lo_i and hi < lo_i]
+        if not hi_candidates:
+            return None
+        hi_i = max(hi_candidates)
+        return ((lo_i, lows[lo_i]), (hi_i, highs[hi_i]))
 
 def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]], direction: str) -> Tuple[bool, Tuple[float,float]]:
     (lo_i, lo_v), (hi_i, hi_v) = impulse
@@ -274,10 +319,10 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
 
     # M15: 30MA Breakout mit Volumen (Pflicht)
     if direction == "LONG":
-        if trig15["bull30"]: ok.append("M15 30MA Break ↑ (mit Volumen)")
+        if trig15["bull30"]: ok.append("M15 30MA Break ↑ (Vol + Slope + RSI)")
         else:                return (False, ok, ["Kein M15 30MA Break↑"])
     else:
-        if trig15["bear30"]: ok.append("M15 30MA Break ↓ (mit Volumen)")
+        if trig15["bear30"]: ok.append("M15 30MA Break ↓ (Vol + Slope + RSI)")
         else:                return (False, ok, ["Kein M15 30MA Break↓"])
 
     # EMA200 Richtung (M15)
@@ -294,7 +339,7 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
         if fib_ok: ok.append(f"Safe-Entry Fib 0.5–0.618 ({FIB_CONFIRM_TF})")
         else:      return (False, ok, [f"Kein Fib-Retest (0.5–0.618) auf {FIB_CONFIRM_TF}"])
 
-    # RSI Hinweis
+    # RSI Hinweis (informativ)
     if direction=="LONG":
         if trig15["rsi"] > 67: warn.append(f"RSI hoch ({trig15['rsi']:.1f})")
         else:                  ok.append(f"RSI ok ({trig15['rsi']:.1f})")
@@ -310,6 +355,23 @@ def need_throttle(key: str, now: float, cool_s: int = COOLDOWN_S) -> bool:
         return True
     last_signal[key] = now
     return False
+
+# ---------- Punkt 6: Break-Fail-Sperre (schneller Fakeout-Filter) ----------
+def break_failed_recently(df15: pd.DataFrame) -> bool:
+    """Verwirft Setups, wenn nach einem frischen Break sofort ein Re-Close zurück über/unter MA30 kommt."""
+    s = sma(df15.close, 30)
+    c = df15.close
+    if len(c) < 3:
+        return False
+    last3 = c.iloc[-3:]
+    last3_ma = s.iloc[-3:]
+    # Up-Break gefolgt von Close < MA30
+    up_break = (last3.iloc[-3] <= last3_ma.iloc[-3]) and (last3.iloc[-2] > last3_ma.iloc[-2])
+    fail_up  = up_break and (last3.iloc[-1] < last3_ma.iloc[-1])
+    # Down-Break gefolgt von Close > MA30
+    dn_break = (last3.iloc[-3] >= last3_ma.iloc[-3]) and (last3.iloc[-2] < last3_ma.iloc[-2])
+    fail_dn  = dn_break and (last3.iloc[-1] > last3_ma.iloc[-1])
+    return bool(fail_up or fail_dn)
 
 # ---------- Minimalistisches Signal ----------
 async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp: float,
@@ -354,6 +416,12 @@ async def scan_once():
             trig15 = analyze_trigger_m15(df15)
             price  = trig15["price"]
 
+            # Punkt 6: Break-Fail-Check
+            if break_failed_recently(df15):
+                last_scan_report["symbols"][sym] = {"skip": "Break-Fail (MA30 Re-Close)"}
+                await asyncio.sleep(getattr(ex, "rateLimit", 200) / 1000)
+                continue
+
             # CoinGlass 12h Heatmap (optional)
             cg_dir = None
             if COINGLASS_API_KEY:
@@ -384,7 +452,6 @@ async def scan_once():
 
             # Safe-Entry via Fib-Retest auf FIB_CONFIRM_TF
             df_fib  = fetch_df(sym, FIB_CONFIRM_TF)
-            impulse = last_impulse(df_fib)
 
             # Preisbasis für Fib je nach Close-Policy
             if FIB_REQUIRE_CANDLE_CLOSE:
@@ -392,11 +459,17 @@ async def scan_once():
             else:
                 price_fib = float(df_fib["close"].iloc[-1])
 
+            # Punkt 3: richtungs-sensitiver Impuls
+            impulse_L = directional_impulse(df_fib, "LONG")
+            impulse_S = directional_impulse(df_fib, "SHORT")
+
             fib_ok_L = fib_ok_S = False
-            if impulse is not None:
-                okL, _ = fib_zone_ok(price_fib, impulse, "LONG")
-                okS, _ = fib_zone_ok(price_fib, impulse, "SHORT")
-                fib_ok_L, fib_ok_S = bool(okL), bool(okS)
+            if impulse_L is not None:
+                okL, _ = fib_zone_ok(price_fib, impulse_L, "LONG")
+                fib_ok_L = bool(okL)
+            if impulse_S is not None:
+                okS, _ = fib_zone_ok(price_fib, impulse_S, "SHORT")
+                fib_ok_S = bool(okS)
 
             # Kandidaten sammeln
             candidates = []
