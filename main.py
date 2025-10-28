@@ -58,7 +58,7 @@ SAFE_ENTRY_REQUIRED       = True          # Fib-Retest Pflicht (False = nur opti
 FIB_TOL_PCT               = 0.10 / 100.0  # ±0.10 % Toleranz
 FIB_REQUIRE_CANDLE_CLOSE  = True          # Fib-Confirm NUR mit geschlossener Candle
 
-# ====== Strength-Delay (NEU) ======
+# ====== Strength-Delay ======
 BREAK_DELAY_BARS = 2  # Anzahl bestätigender M15-Kerzen nach dem Cross (z.B. 2 oder 3)
 
 PIVOT_LEFT_TRIG  = 3
@@ -86,11 +86,14 @@ COOLDOWN_S       = 5000
 
 # ====== Trendfilter (EMA200) – Pflicht mit Toleranz ======
 EMA200_STRICT  = True
-EMA200_TOL_PCT = 0.05   # bis zu 0.20% unter/über EMA200 zulassen
+EMA200_TOL_PCT = 0.05   # bis zu 0.05% unter/über EMA200 zulassen
 
 # ====== Fib-Recent Settings ======
-FIB_RECENT_BARS = 3              # akzeptiere Retest bis zu 6×5m Kerzen zurück (~30min)
-MAX_DIST_FROM_ZONE_ATR = 1.0     # max. Distanz zum Zonenrand in ATR(15m), sonst "zu spät"
+FIB_RECENT_BARS = 3
+MAX_DIST_FROM_ZONE_ATR = 1.0
+
+# ====== 5m MA30-Filter (NEU) ======
+MA30_5M_FILTER = True   # Long nur über 5m-MA30, Short nur darunter
 
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Fib-Retest + S/R)")
@@ -149,8 +152,6 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
     n = max(1, BREAK_DELAY_BARS)
 
     def confirmed_long() -> bool:
-        # letzte n Kerzen über MA30 & davor <= MA30 (Cross in Vergangenheit),
-        # zusätzlich Volumen, Slope, RSI
         if len(c) < n + 2:
             return False
         last_ok = all(c.iloc[-i] > s.iloc[-i] for i in range(1, n+1))
@@ -460,6 +461,7 @@ async def send_mode_banner():
         f"• Fib-Confirm-TF: {FIB_CONFIRM_TF} (Close={'Yes' if FIB_REQUIRE_CANDLE_CLOSE else 'Live'})\n"
         f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20, ATR% ≥ {MIN_ATR_PCT:.2f}%\n"
         f"• EMA200-Filter: Pflicht mit Toleranz ≤ {EMA200_TOL_PCT:.2f}%\n"
+        f"• 5m MA30-Filter: {'AKTIV' if MA30_5M_FILTER else 'deaktiviert'}\n"
         "• Ziel: Einziger TP (S/R: erweitertes Ziel; ATR: früherer TP3)"
         + (f"\n• CoinGlass Heatmap 12h (optional): Richtung muss matchen" if COINGLASS_API_KEY else "")
     )
@@ -513,11 +515,17 @@ async def scan_once():
                 except Exception:
                     cg_dir = None
 
-            # Fib-Check (now or recent)
+            # Fib-Check (now or recent) + 5m MA30-Filter
             df_fib = fetch_df(sym, FIB_CONFIRM_TF)
             price_fib_now = float(df_fib["close"].iloc[-1])
             fib_ok_L = fib_ok_now_or_recent(df_fib, "LONG",  price_fib_now, trig15["atr"])
             fib_ok_S = fib_ok_now_or_recent(df_fib, "SHORT", price_fib_now, trig15["atr"])
+
+            if MA30_5M_FILTER:
+                df_fib["sma30"] = sma(df_fib["close"], 30)
+                ma30_now = float(df_fib["sma30"].iloc[-1])
+                fib_ok_L = fib_ok_L and (price_fib_now > ma30_now)
+                fib_ok_S = fib_ok_S and (price_fib_now < ma30_now)
 
             # Kandidaten sammeln
             candidates = []
@@ -576,7 +584,7 @@ async def _startup():
 # ====== TEST & RELAY ENDPOINTS ======
 @app.get("/test")
 async def test():
-    text = "✅ Test: Bot & Telegram OK — Mode: M15 Break + Strength-Delay + Fib (1 TP) + EMA200 Toleranz"
+    text = "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Fib-Retest + S/R (1 TP) + EMA200 Toleranz + 5m MA30-Filter"
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True}
 
