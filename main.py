@@ -69,7 +69,7 @@ SR_TF = "1h"
 PIVOT_LEFT = 3
 PIVOT_RIGHT = 3
 CLUSTER_PCT = 0.15 / 100.0
-MIN_STRENGTH = 3
+MIN_STRENGTH = 4
 TP2_FACTOR = 1.20  # für erweitertes S/R-Ziel (ehem. TP2)
 
 # ====== ATR-Fallback ======
@@ -86,10 +86,10 @@ COOLDOWN_S       = 5000
 
 # ====== Trendfilter (EMA200) – Pflicht mit Toleranz ======
 EMA200_STRICT  = True
-EMA200_TOL_PCT = 0.20   # bis zu 0.20% unter/über EMA200 zulassen
+EMA200_TOL_PCT = 0.05   # bis zu 0.20% unter/über EMA200 zulassen
 
 # ====== Fib-Recent Settings ======
-FIB_RECENT_BARS = 6              # akzeptiere Retest bis zu 6×5m Kerzen zurück (~30min)
+FIB_RECENT_BARS = 3              # akzeptiere Retest bis zu 6×5m Kerzen zurück (~30min)
 MAX_DIST_FROM_ZONE_ATR = 1.0     # max. Distanz zum Zonenrand in ATR(15m), sonst "zu spät"
 
 bot = Bot(token=TG_TOKEN)
