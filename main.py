@@ -95,6 +95,14 @@ MAX_DIST_FROM_ZONE_ATR = 1.0
 # ====== 5m MA30-Filter (NEU) ======
 MA30_5M_FILTER = True   # Long nur über 5m-MA30, Short nur darunter
 
+# ====== CoinGlass Sweep-Filter Settings ======
+CG_RANGE = "12h"                 # Zeitfenster wie im UI
+CG_TOP_PCT = 90                  # signifikante Levels = Top-10% Volumina
+CG_NEAR_BAND_PCT = 0.35 / 100.0  # „nah“ = <= 0.35% Entfernung vom Preis
+CG_ATR_MULT_NEAR = 0.6           # „nah“ = <= 0.6 × ATR15
+CG_DOM_RATIO = 1.35              # Dominanzschwelle (Top3 oben vs. unten)
+CG_TIMEOUT = 5                   # HTTP-Timeout (Sek.)
+
 bot = Bot(token=TG_TOKEN)
 app = FastAPI(title="MEXC Auto Scanner → Telegram (M15 30MA Break + Fib-Retest + S/R)")
 
@@ -355,6 +363,127 @@ def make_levels_sr(direction: str, entry: float, atrv: float, df_sr: pd.DataFram
         tp = round(entry - TP3_ATR * atrv, 6)
     return entry, sl, tp, False
 
+# ====== CoinGlass Sweep-Filter Helpers ======
+def _cg_fetch_levels(symbol_base: str):
+    if not COINGLASS_API_KEY:
+        return None
+    try:
+        resp = requests.get(
+            f"{COINGLASS_URL}/api/futures/liquidation/aggregated-heatmap/model1",
+            headers={"CG-API-KEY": COINGLASS_API_KEY},
+            params={"symbol": symbol_base, "range": CG_RANGE},
+            timeout=CG_TIMEOUT
+        )
+        if not resp.ok:
+            return None
+        data = resp.json()
+        if data.get("code") != 0:
+            return None
+        y_axis = data["data"].get("y_axis", [])
+        liq = data["data"].get("liquidation_leverage_data", [])
+        if not y_axis or not liq:
+            return None
+        # Summe Volumen je y_idx (Preis-Level)
+        agg = {}
+        for _x, y_idx, vol in liq:
+            agg[y_idx] = agg.get(y_idx, 0) + float(vol)
+        levels = []
+        for y_idx, vol in agg.items():
+            if 0 <= y_idx < len(y_axis):
+                try:
+                    price_lvl = float(y_axis[y_idx])
+                except Exception:
+                    continue
+                levels.append((price_lvl, vol))
+        if not levels:
+            return None
+        # Signifikanz-Schwelle (Top-10% Volumina)
+        vols = [v for _, v in levels]
+        vols_sorted = sorted(vols)
+        idx = max(0, int(len(vols_sorted) * CG_TOP_PCT / 100.0) - 1)
+        thresh = vols_sorted[idx]
+        return {"levels": levels, "vol_thresh": thresh}
+    except Exception:
+        return None
+
+def _cg_analyze(price_now: float, atr15: float, cg):
+    levels = cg["levels"]; thresh = cg["vol_thresh"]
+    above = []
+    below = []
+    for p, v in levels:
+        dist_abs = abs(p - price_now)
+        dist_pct = dist_abs / max(price_now, 1e-9)
+        dist_atr = dist_abs / max(atr15, 1e-9) if atr15 > 0 else float("inf")
+        rec = (p, v, dist_pct, dist_atr)
+        if p >= price_now:
+            above.append(rec)
+        else:
+            below.append(rec)
+
+    # Signifikante Levels
+    sig_above = [r for r in above if r[1] >= thresh]
+    sig_below = [r for r in below if r[1] >= thresh]
+
+    # Nächster signifikanter Pool je Seite
+    near_above = min(sig_above, key=lambda r: r[2], default=None)
+    near_below = min(sig_below, key=lambda r: r[2], default=None)
+
+    # Mid-Chop, wenn oben & unten sehr nahe Pools liegen
+    mid_chop = False
+    if near_above and near_below:
+        if (near_above[2] <= CG_NEAR_BAND_PCT and near_below[2] <= CG_NEAR_BAND_PCT):
+            mid_chop = True
+
+    # Bias über Summe der Top3-Volumina pro Seite
+    top3_above = sorted(sig_above, key=lambda r: r[1], reverse=True)[:3]
+    top3_below = sorted(sig_below, key=lambda r: r[1], reverse=True)[:3]
+    sum_above = sum(r[1] for r in top3_above) if top3_above else 0.0
+    sum_below = sum(r[1] for r in top3_below) if top3_below else 0.0
+    if sum_above > CG_DOM_RATIO * max(sum_below, 1e-9):
+        bias = "UP"
+    elif sum_below > CG_DOM_RATIO * max(sum_above, 1e-9):
+        bias = "DOWN"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "near_above": near_above,  # (price, vol, dist_pct, dist_atr)
+        "near_below": near_below,
+        "bias": bias,
+        "mid_chop": mid_chop
+    }
+
+def coinglass_sweep_filter(price_now: float, atr15: float, direction: str, cg) -> Tuple[bool, str]:
+    """
+    True = PASS (Trade erlaubt), False = REJECT (skip), plus Grund (string)
+    Regeln:
+      1) Mid-Chop: nahe Pools oben & unten -> skip
+      2) Proximity Risk: signifikanter Gegenpool nahe (prozentual ODER ATR-basiert) -> skip
+      3) Bias gegen Setup -> skip
+    """
+    if not cg:
+        return True, "CG:kein-daten"
+
+    an = _cg_analyze(price_now, atr15, cg)
+
+    # (1) Mid-Chop
+    if an["mid_chop"]:
+        return False, "CG:mid-chop"
+
+    # (2) Proximity Risk
+    opp = an["near_below"] if direction.upper() == "LONG" else an["near_above"]
+    if opp:
+        _, _, dist_pct, dist_atr = opp
+        if (dist_pct <= CG_NEAR_BAND_PCT) or (dist_atr <= CG_ATR_MULT_NEAR):
+            return False, f"CG:opp-pool-near (pct={dist_pct*100:.3f}%, atr={dist_atr:.2f}x)"
+
+    # (3) Bias
+    if (direction.upper() == "LONG" and an["bias"] == "DOWN") or \
+       (direction.upper() == "SHORT" and an["bias"] == "UP"):
+        return False, f"CG:bias-gegen ({an['bias']})"
+
+    return True, "CG:ok"
+
 # ====== Checkliste (inkl. EMA200 Toleranz) ======
 def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tuple[bool, List[str], List[str]]:
     ok, warn = [], []
@@ -487,33 +616,9 @@ async def scan_once():
                 await asyncio.sleep(getattr(ex, "rateLimit", 200) / 1000)
                 continue
 
-            # CoinGlass 12h Heatmap (optional)
-            cg_dir = None
-            if COINGLASS_API_KEY:
-                base = sym.split("/")[0]
-                params = {"symbol": base, "range": "12h"}
-                try:
-                    resp = requests.get(
-                        f"{COINGLASS_URL}/api/futures/liquidation/aggregated-heatmap/model1",
-                        headers={"CG-API-KEY": COINGLASS_API_KEY},
-                        params=params,
-                        timeout=5
-                    )
-                    data = resp.json()
-                    if data.get("code") == 0 and "data" in data:
-                        y_axis = data["data"].get("y_axis", [])
-                        liq = data["data"].get("liquidation_leverage_data", [])
-                        if y_axis and liq:
-                            sum_by_y = {}
-                            for x_idx, y_idx, vol in liq:
-                                sum_by_y[y_idx] = sum_by_y.get(y_idx, 0) + vol
-                            if sum_by_y:
-                                max_idx = max(sum_by_y, key=sum_by_y.get)
-                                if 0 <= max_idx < len(y_axis):
-                                    max_price = float(y_axis[max_idx])
-                                    cg_dir = "LONG" if max_price > price else "SHORT"
-                except Exception:
-                    cg_dir = None
+            # ---- CoinGlass Levels (einmal pro Symbol laden) ----
+            base = sym.split("/")[0]
+            cg_levels = _cg_fetch_levels(base) if COINGLASS_API_KEY else None
 
             # Fib-Check (now or recent) + 5m MA30-Filter
             df_fib = fetch_df(sym, FIB_CONFIRM_TF)
@@ -524,18 +629,30 @@ async def scan_once():
             if MA30_5M_FILTER:
                 df_fib["sma30"] = sma(df_fib["close"], 30)
                 ma30_now = float(df_fib["sma30"].iloc[-1])
-                fib_ok_L = fib_ok_L and (price_fib_now > ma30_now)
-                fib_ok_S = fib_ok_S and (price_fib_now < ma30_now)
+                if math.isnan(ma30_now):
+                    fib_ok_L = fib_ok_S = False
+                else:
+                    fib_ok_L = fib_ok_L and (price_fib_now > ma30_now)
+                    fib_ok_S = fib_ok_S and (price_fib_now < ma30_now)
 
             # Kandidaten sammeln
             candidates = []
+            skip_reasons = []
+
             for direction in ("LONG", "SHORT"):
                 fib_ok = fib_ok_L if direction=="LONG" else fib_ok_S
+
+                # --- CoinGlass Sweep-Filter pro Richtung ---
+                if COINGLASS_API_KEY:
+                    cg_pass, cg_reason = coinglass_sweep_filter(price, trig15["atr"], direction, cg_levels)
+                    if not cg_pass:
+                        skip_reasons.append(cg_reason + f" [{direction}]")
+                        continue
+
                 passed, ok_tags, warn_tags = build_checklist(direction, trig15, fib_ok)
                 if not passed:
                     continue
-                if cg_dir and cg_dir != direction:
-                    continue
+
                 ema_align = trig15["ema200_up"] if direction=="LONG" else trig15["ema200_dn"]
                 prob = prob_score(trig15["vol_ok"], ema_align, fib_ok)
                 candidates.append((direction, prob, ok_tags, warn_tags))
@@ -553,15 +670,19 @@ async def scan_once():
                         "direction": direction, "prob": prob, "throttled": throttled,
                         "ok": ok_tags, "warn": warn_tags,
                         "price": price, "atr": trig15["atr"],
-                        "sr_used": used_sr, "heatmap_dir": cg_dir,
-                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE
+                        "sr_used": used_sr,
+                        "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE,
+                        "cg_filter": "enabled" if COINGLASS_API_KEY else "disabled"
                     }
                     if not throttled:
                         await send_signal(sym, direction, entry, sl, tp, prob, ok_tags, warn_tags, used_sr)
                 else:
                     last_scan_report["symbols"][sym] = {"skip": f"Prob. {prob}% < {PROB_MIN}%"}
             else:
-                last_scan_report["symbols"][sym] = {"skip": "Kein Setup (Pflichten nicht erfüllt)"}
+                reason = "Kein Setup (Pflichten nicht erfüllt)"
+                if skip_reasons:
+                    reason += " | " + "; ".join(skip_reasons)
+                last_scan_report["symbols"][sym] = {"skip": reason}
 
         except Exception as e:
             last_scan_report["symbols"][sym] = {"error": str(e)}
