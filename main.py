@@ -47,7 +47,8 @@ SYMBOLS = [
     "KLAY/USDT","RSR/USDT","STORJ/USDT","MKR/USDT","GMX/USDT",
     "WOO/USDT","TWT/USDT","JASMY/USDT","FET/USDT","SAND/USDT",
     "AXS/USDT","GMT/USDT","ROSE/USDT","COTI/USDT","BAT/USDT",
-    "ZEC/USDT","IOTA/USDT","PYR/USDT","AIOZ/USDT","METIS/USDT"
+    "ZEC/USDT","IOTA/USDT","PYR/USDT","AIOZ/USDT","METIS/USDT",
+    "SUI/USDT"
 ]
 _seen = set()
 SYMBOLS = [s for s in SYMBOLS if not (s in _seen or _seen.add(s))]
