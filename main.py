@@ -33,33 +33,22 @@ SYMBOLS = [
     # ==== Erweiterte 50 ====
     "HBAR/USDT","CRV/USDT","CAKE/USDT","WLD/USDT",
     "TIA/USDT","CFX/USDT","WIF/USDT","TRUMP/USDT",
-    "SUI/USDT","SAPIEN/USDT","ASTAR/USDT"  # Tippfehler gefixt
+    "SUI/USDT","SAPIEN/USTD","ASTER/USTD"
 ]
 _seen = set()
 SYMBOLS = [s for s in SYMBOLS if not (s in _seen or _seen.add(s))]
 
 # ====== Analyse & Scan ======
 LOOKBACK        = 300
-SCAN_INTERVAL_S = 5 * 60   # Intervall (Sek.)
+SCAN_INTERVAL_S = 5 * 60   # Intervall (min)
 
 # ====== Entry-Logik ======
 # Pflicht 1: M15 30MA-Break + Volumen (mit Slope + RSI + Strength-Delay)
 # Pflicht 2: Safe-Entry per Fib-Retest (0.5–0.618) auf FIB_CONFIRM_TF (mit richtungs-sensitivem Impuls)
 FIB_CONFIRM_TF            = "5m"          # "5m" oder "15m"
 SAFE_ENTRY_REQUIRED       = True          # Fib-Retest Pflicht (False = nur optional)
-FIB_TOL_PCT               = 0.10 / 100.0  # ±0.10 % Toleranz (legacy, weiterhin geloggt)
-FIB_REQUIRE_CANDLE_CLOSE  = True          # (legacy Flag; neuer Modus siehe FIB_CONFIRM_MODE)
-
-# ====== Fibonacci – Präzisions-Settings (NEU) ======
-FIB_BAND                = "CLASSIC"   # "CLASSIC"(0.5–0.618), "GOLDEN"(0.618–0.65), "DEEP"(0.618–0.786), "SHALLOW"(0.382–0.5), "CUSTOM"
-FIB_BAND_CUSTOM         = (0.5, 0.618) # nur wenn FIB_BAND="CUSTOM"
-
-FIB_TOL_MODE            = "pct"       # "pct" oder "atr"
-FIB_TOL_ATR_MULT        = 0.25        # z.B. 0.25 * ATR(15) als halbe Bandbreite (nur bei "atr")
-
-FIB_CONFIRM_MODE        = "close"     # "close" (Schlusskurs in Zone), "wick" (Docht reicht), "2bar" (2 Schlüsse in Zone)
-FIB_MIN_TOUCHES         = 1           # wie oft Zone (je nach MODE) in den letzten FIB_RECENT_BARS berührt werden muss
-FIB_USE_LOG_SCALE       = False       # True = log-Fibonacci (für sehr große Spannen)
+FIB_TOL_PCT               = 0.10 / 100.0  # ±0.10 % Toleranz
+FIB_REQUIRE_CANDLE_CLOSE  = True          # Fib-Confirm NUR mit geschlossener Candle
 
 # ====== Strength-Delay ======
 BREAK_DELAY_BARS = 2  # Anzahl bestätigender M15-Kerzen nach dem Cross (z.B. 2 oder 3)
@@ -89,7 +78,7 @@ COOLDOWN_S       = 5000
 
 # ====== Trendfilter (EMA200) – Pflicht mit Toleranz ======
 EMA200_STRICT  = True
-EMA200_TOL_PCT = 0.20   # bis zu 0.20% unter/über EMA200 zulassen
+EMA200_TOL_PCT = 0.20   # bis zu 0.05% unter/über EMA200 zulassen
 
 # ====== Fib-Recent Settings ======
 FIB_RECENT_BARS = 6
@@ -193,7 +182,7 @@ def analyze_trigger_m15(df: pd.DataFrame) -> Dict[str, Any]:
         "ma30_slope_dn": bool(slope_ok_down),
     }
 
-# ====== Fib-Retest – Pivot Finder ======
+# ====== Fib-Retest auf FIB_CONFIRM_TF ======
 def _find_pivots(values: List[float], left: int, right: int, is_high: bool) -> List[int]:
     idxs, n = [], len(values)
     for i in range(left, n - right):
@@ -247,134 +236,58 @@ def directional_impulse(df: pd.DataFrame, want: str) -> Optional[Tuple[Tuple[int
         hi_i = max(hi_candidates)
         return ((lo_i, lows[lo_i]), (hi_i, highs[hi_i]))
 
-# ====== Fibonacci-Helper (NEU) ======
-def _fib_band_tuple() -> Tuple[float, float]:
-    band = FIB_BAND.upper()
-    if band == "CLASSIC":
-        return (0.5, 0.618)
-    if band == "GOLDEN":
-        return (0.618, 0.65)
-    if band == "DEEP":
-        return (0.618, 0.786)
-    if band == "SHALLOW":
-        return (0.382, 0.5)
-    lo, hi = FIB_BAND_CUSTOM  # CUSTOM fallback
-    return (min(lo, hi), max(lo, hi))
-
-def _fib_levels_from_swing(lo_v: float, hi_v: float) -> Dict[float, float]:
-    """Gibt ein dict {ratio: level} zurück. Unterstützt lineare und log-Skala."""
-    if not FIB_USE_LOG_SCALE:
-        span = hi_v - lo_v
-        return {
-            0.382: lo_v + 0.382 * span,
-            0.5:   lo_v + 0.5   * span,
-            0.618: lo_v + 0.618 * span,
-            0.65:  lo_v + 0.65  * span,
-            0.705: lo_v + 0.705 * span,
-            0.786: lo_v + 0.786 * span,
-        }
-    else:
-        L, H = math.log(max(lo_v, 1e-12)), math.log(max(hi_v, 1e-12))
-        span = H - L
-        def lf(r): return math.exp(L + r * span)
-        return {r: lf(r) for r in (0.382, 0.5, 0.618, 0.65, 0.705, 0.786)}
-
-def _apply_tolerance(zmin: float, zmax: float, atr_ref: float) -> Tuple[float, float]:
-    if FIB_TOL_MODE.lower() == "atr":
-        tol = max(atr_ref * FIB_TOL_ATR_MULT, 0.0)
-        return (zmin - tol, zmax + tol)
-    # default: pct (legacy FIB_TOL_PCT weiter verfügbar)
-    return (zmin * (1 - FIB_TOL_PCT), zmax * (1 + FIB_TOL_PCT))
-
-def _build_fib_zone(lo_v: float, hi_v: float, direction: str, atr_ref: float) -> Tuple[float, float]:
-    lvls = _fib_levels_from_swing(lo_v, hi_v)
-    r1, r2 = _fib_band_tuple()
-    if r1 not in lvls or r2 not in lvls:  # linearer Fallback bei Custom
-        span = hi_v - lo_v
-        a = lo_v + r1 * span
-        b = lo_v + r2 * span
-    else:
-        a, b = lvls[r1], lvls[r2]
-    zmin, zmax = (min(a, b), max(a, b))
-    # SHORT: falls Swing invertiert – Absicherung
-    if direction.upper() == "SHORT" and hi_v < lo_v:
-        lo_v, hi_v = min(lo_v, hi_v), max(lo_v, hi_v)
-        span = hi_v - lo_v
-        a = lo_v + r1 * span
-        b = lo_v + r2 * span
-        zmin, zmax = (min(a, b), max(a, b))
-    return _apply_tolerance(zmin, zmax, atr_ref)
-
-# ====== Fib-API (ersetzt alte Funktionen; Signaturen bleiben kompatibel) ======
-def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]], direction: str, atr_ref: float = 0.0) -> Tuple[bool, Tuple[float,float]]:
+def fib_zone_ok(price: float, impulse: Tuple[Tuple[int,float], Tuple[int,float]], direction: str) -> Tuple[bool, Tuple[float,float]]:
     (lo_i, lo_v), (hi_i, hi_v) = impulse
     if hi_i == lo_i:
         return (False, (0.0, 0.0))
-    zmin, zmax = _build_fib_zone(lo_v, hi_v, direction, atr_ref)
-    ok = (zmin <= price <= zmax)
-    return (ok and direction.upper() in ("LONG","SHORT"), (zmin, zmax))
+    if hi_i > lo_i:
+        fib50  = lo_v + 0.5   * (hi_v - lo_v)
+        fib618 = lo_v + 0.618 * (hi_v - lo_v)
+        zmin, zmax = sorted([fib50, fib618])
+        zmin *= (1 - FIB_TOL_PCT); zmax *= (1 + FIB_TOL_PCT)
+        ok = (direction == "LONG") and (zmin <= price <= zmax)
+        return (ok, (zmin, zmax))
+    else:
+        fib50  = hi_v - 0.5   * (hi_v - lo_v)
+        fib618 = hi_v - 0.618 * (hi_v - lo_v)
+        zmin, zmax = sorted([fib618, fib50])
+        zmin *= (1 - FIB_TOL_PCT); zmax *= (1 + FIB_TOL_PCT)
+        ok = (direction == "SHORT") and (zmin <= price <= zmax)
+        return (ok, (zmin, zmax))
 
-def fib_zone_for_direction(df_fib: pd.DataFrame, direction: str, atr_ref: float) -> Optional[Tuple[float, float]]:
+# ====== Fib "jetzt oder kürzlich" ======
+def fib_zone_for_direction(df_fib: pd.DataFrame, direction: str) -> Optional[Tuple[float, float]]:
     imp = directional_impulse(df_fib, direction)
     if imp is None:
         return None
-    _, zone = fib_zone_ok(price=float("nan"), impulse=imp, direction=direction, atr_ref=atr_ref)
+    _, zone = fib_zone_ok(price=0.0, impulse=imp, direction=direction)
     return zone
 
-def _price_hit_zone(pr_open: float, pr_high: float, pr_low: float, pr_close: float, zmin: float, zmax: float) -> bool:
-    mode = FIB_CONFIRM_MODE.lower()
-    if mode == "wick":
-        return (pr_low <= zmax and pr_high >= zmin)  # Docht berührt Zone
-    return (zmin <= pr_close <= zmax)               # "close" / "2bar" via Close
-
 def fib_ok_now_or_recent(df_fib: pd.DataFrame, direction: str, price_now: float, atr15: float) -> bool:
-    zone = fib_zone_for_direction(df_fib, direction, atr_ref=atr15)
+    zone = fib_zone_for_direction(df_fib, direction)
     if not zone:
         return False
     zmin, zmax = zone
 
-    closes = df_fib["close"]
-    highs  = df_fib["high"]
-    lows   = df_fib["low"]
-    opens  = df_fib["open"]
-
-    nbars = max(1, FIB_RECENT_BARS)
-    # geschlossene Kerzen betrachten (letzte laufende Candle raus)
-    start = max(0, len(df_fib) - 1 - nbars)
-    idxs = list(range(start, len(df_fib) - 1))
-
-    mode = FIB_CONFIRM_MODE.lower()
-    if mode == "2bar":
-        seq = 0
-        for i in idxs:
-            if zmin <= float(closes.iloc[i]) <= zmax:
-                seq += 1
-                if seq >= 2:
-                    return True
-            else:
-                seq = 0
+    if FIB_REQUIRE_CANDLE_CLOSE:
+        price_chk = float(df_fib["close"].iloc[-2]) if len(df_fib) >= 2 else float(df_fib["close"].iloc[-1])
     else:
-        touches = 0
-        for i in idxs:
-            if _price_hit_zone(
-                pr_open=float(opens.iloc[i]),
-                pr_high=float(highs.iloc[i]),
-                pr_low =float(lows.iloc[i]),
-                pr_close=float(closes.iloc[i]),
-                zmin=zmin, zmax=zmax
-            ):
-                touches += 1
-                if touches >= FIB_MIN_TOUCHES:
-                    return True
+        price_chk = float(df_fib["close"].iloc[-1])
+    if zmin <= price_chk <= zmax:
+        return True
 
-    # Kein Recent-Touch → Distanz-Check (falls Preis bereits weg ist)
+    closes = df_fib["close"].iloc[-(FIB_RECENT_BARS+1):-1] if len(df_fib) > 1 else pd.Series([], dtype=float)
+    if len(closes) == 0:
+        return False
+    touched = any((zmin <= c <= zmax) for c in closes)
+    if not touched:
+        return False
+
     if direction.upper() == "SHORT":
-        if price_now >= zmin:
-            return False
+        if price_now >= zmin: return False
         dist = zmin - price_now
     else:
-        if price_now <= zmax:
-            return False
+        if price_now <= zmax: return False
         dist = price_now - zmax
 
     return dist <= (MAX_DIST_FROM_ZONE_ATR * atr15)
@@ -399,7 +312,7 @@ def find_pivots_levels(df: pd.DataFrame) -> Tuple[List[Tuple[float,int]], List[T
         clusters, cur = [], [values[0]]
         for x in values[1:]:
             center = sum(cur)/len(cur)
-            if abs(x - center)/max(center,1e-12) <= tol_pct:
+            if abs(x - center)/center <= tol_pct:
                 cur.append(x)
             else:
                 clusters.append((sum(cur)/len(cur), len(cur))); cur = [x]
@@ -563,7 +476,7 @@ def coinglass_sweep_filter(price_now: float, atr15: float, direction: str, cg) -
 
     return True, "CG:ok"
 
-# ====== Checkliste (inkl. EMA200 Toleranz & Fib-Detail) ======
+# ====== Checkliste (inkl. EMA200 Toleranz) ======
 def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tuple[bool, List[str], List[str]]:
     ok, warn = [], []
 
@@ -578,7 +491,7 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
         if trig15["bear30"]: ok.append(f"M15 30MA Break ↓ bestätigt ({BREAK_DELAY_BARS} Bars)")
         else:                return (False, ok, [f"Kein bestätigter Break↓ ({BREAK_DELAY_BARS})"])
 
-    # EMA200 mit Toleranz
+    # ----- EMA200 mit Toleranz -----
     ema200_val = trig15.get("ema200_val", None)
     if ema200_val is None:
         return (False, ok, ["EMA200 Daten fehlen"])
@@ -613,13 +526,10 @@ def build_checklist(direction: str, trig15: Dict[str, Any], fib_ok: bool) -> Tup
 
     # Safe-Entry per Fib-Retest (falls Pflicht)
     if SAFE_ENTRY_REQUIRED:
-        if fib_ok: ok.append(f"Fib ok ({FIB_BAND}, {FIB_CONFIRM_MODE})")
-        else:      return (False, ok, [f"Kein Fib-Retest ({FIB_BAND}, {FIB_CONFIRM_MODE})"])
-    else:
-        if fib_ok: ok.append(f"Fib optional erfüllt ({FIB_BAND}, {FIB_CONFIRM_MODE})")
-        else:      warn.append("Fib optional nicht erfüllt")
+        if fib_ok: ok.append(f"Safe-Entry Fib 0.5–0.618 ({FIB_CONFIRM_TF})")
+        else:      return (False, ok, [f"Kein Fib-Retest (0.5–0.618) auf {FIB_CONFIRM_TF}"])
 
-    # RSI Hinweis (leicht)
+    # RSI Hinweis
     if direction=="LONG":
         if trig15["rsi"] > 67: warn.append(f"RSI hoch ({trig15['rsi']:.1f})")
         else:                  ok.append(f"RSI ok ({trig15['rsi']:.1f})")
@@ -658,11 +568,23 @@ async def send_signal(symbol: str, direction: str, entry: float, sl: float, tp: 
         f"🛡 *Scanner Signal* — {symbol}\n"
         f"➡️ {arrow}\n"
         f"🎯 Entry: `{entry}`\n"
-        f"🏁 TP: `{tp}` {'(S/R)' if used_sr else '(ATR)'}\n"
+        f"🏁 TP: `{tp}`\n"
         f"🛡 SL: `{sl}`\n"
-        f"📈 Wahrscheinlichkeit: *{prob}%*\n"
-        f"OK: " + " | ".join(checklist_ok) + ("\n" if checklist_ok else "") +
-        (f"WARN: " + " | ".join(checklist_warn) if checklist_warn else "")
+        f"📈 Wahrscheinlichkeit: *{prob}%*"
+    )
+    await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
+
+async def send_mode_banner():
+    text = (
+        "🛡 *Scanner gestartet – MODUS: M15 30MA Breakout (Vol + Slope + RSI) + "
+        f"Strength-Delay {BREAK_DELAY_BARS} Bars + Fib-Retest (0.5–0.618) + S/R (1h)*\n"
+        f"• Scan-Intervall: {SCAN_INTERVAL_S//60} Minuten\n"
+        f"• Fib-Confirm-TF: {FIB_CONFIRM_TF} (Close={'Yes' if FIB_REQUIRE_CANDLE_CLOSE else 'Live'})\n"
+        f"• Volumen: Pflicht ≥ {VOL_SPIKE_FACTOR:.2f}× MA20, ATR% ≥ {MIN_ATR_PCT:.2f}%\n"
+        f"• EMA200-Filter: Pflicht mit Toleranz ≤ {EMA200_TOL_PCT:.2f}%\n"
+        f"• 5m MA30-Filter: {'AKTIV' if MA30_5M_FILTER else 'deaktiviert'}\n"
+        "• Ziel: Einziger TP (S/R: erweitertes Ziel; ATR: früherer TP3)"
+        + (f"\n• CoinGlass Heatmap 12h (optional): Richtung muss matchen" if COINGLASS_API_KEY else "")
     )
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
 
@@ -742,7 +664,6 @@ async def scan_once():
                         "price": price, "atr": trig15["atr"],
                         "sr_used": used_sr,
                         "fib_tf": FIB_CONFIRM_TF, "fib_close": FIB_REQUIRE_CANDLE_CLOSE,
-                        "fib_band": FIB_BAND, "fib_mode": FIB_CONFIRM_MODE,
                         "cg_filter": "enabled" if COINGLASS_API_KEY else "disabled"
                     }
                     if not throttled:
@@ -770,15 +691,13 @@ async def runner():
 
 @app.on_event("startup")
 async def _startup():
+    await send_mode_banner()
     asyncio.create_task(runner())
 
 # ====== TEST & RELAY ENDPOINTS ======
 @app.get("/test")
 async def test():
-    text = (
-        "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Fib-Retest + S/R (1 TP) "
-        f"+ EMA200 Toleranz + 5m MA30-Filter | FIB {FIB_BAND} ({FIB_CONFIRM_MODE}, tol={FIB_TOL_MODE})"
-    )
+    text = "✅ Test: Bot & Telegram OK — Mode: M15 30MA Break + Fib-Retest + S/R (1 TP) + EMA200 Toleranz + 5m MA30-Filter"
     await bot.send_message(chat_id=TG_CHAT_ID, text=text, parse_mode="Markdown")
     return {"ok": True, "test": True}
 
