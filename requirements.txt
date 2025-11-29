@@ -1,8 +1,1 @@
-fastapi
-uvicorn
-python-telegram-bot==21.*
-pydantic
-ccxt
-pandas
-pandas_ta
-apscheduler
+
